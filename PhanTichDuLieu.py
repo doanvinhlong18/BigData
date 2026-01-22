@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 
-file_path = "2018_taxi_trips.csv"
+file_path = "datasets/2018_taxi_trips.csv"
 size_mb = os.path.getsize(file_path) / 1024**2
 
 print(f"Dung lượng file trên disk: {size_mb:.2f} MB")
@@ -10,7 +10,7 @@ print(f"Dung lượng file trên disk: {size_mb:.2f} MB")
 # ==============================
 # 1. Load dataset
 # ==============================
-df = pd.read_csv("2018_taxi_trips.csv")
+df = pd.read_csv("datasets/2018_taxi_trips.csv")
 
 print("=" * 80)
 print("TỔNG QUAN BỘ DỮ LIỆU")
