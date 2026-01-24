@@ -51,6 +51,29 @@ services:
       - minio_data:/data
 
   # ==================================================
+  # Producer
+  # ==================================================
+  taxi-producer:
+    build: ./producer/taxi
+    container_name: taxi-producer
+    depends_on:
+      - kafka
+    volumes:
+      - ./datasets:/datasets
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+  weather-producer:
+    build: ./producer/weather
+    container_name: weather-producer
+    depends_on:
+      - kafka
+    volumes:
+      - ./datasets:/datasets
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+  # ==================================================
   # Spark Master
   # ==================================================
   spark-master:
