@@ -5,7 +5,7 @@ from base_producer import RealtimeReplayProducer
 from config_producer import KAFKA_BOOTSTRAP_SERVERS, TAXI_TOPIC, SPEED_FACTOR
 
 
-CSV_PATH = "/data/raw/nyc_taxi.csv"
+CSV_PATH = "../../datasets/2018_taxi_trips.csv"
 
 
 def run():
