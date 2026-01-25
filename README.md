@@ -2,197 +2,126 @@
 
 ## 📋 Tổng quan
 
-Bộ dữ liệu bao gồm các thuộc tính về thời gian, vị trí, hành trình và chi phí của mỗi chuyến đi taxi, cho phép thực hiện các bài toán phân tích dữ liệu lớn, khai phá dữ liệu và học máy trong bối cảnh giao thông đô thị.
+Bộ dữ liệu ghi nhận các chuyến đi của NYC Green Taxi năm 2018, bao gồm thông tin thời gian, vị trí, hành trình và chi phí. Dataset có kích thước lớn nên quá trình phân tích ban đầu được thực hiện bằng lấy mẫu dữ liệu (sampling) thay vì load toàn bộ vào bộ nhớ.
 
-### 📊 Thông tin cơ bản
+## 📊 Thông tin cơ bản
 
-| Thuộc tính                                  | Giá trị |
-|---------------------------------------------|---------|
-| **Số bản ghi**                              | 8,807,303 |
-| **Số cột**                                  | 18 |
-| **Dung lượng file gốc trên ổ đĩa**          | 826.63 MB |
-| **Sử dụng bộ nhớ sau khi load bằng Pandas** | 2,838.96 MB|
-| **Khoảng thời gian**                        | 2018 |
-| **Loại dữ liệu**                            | Green Taxi Trip Records |
+| Thuộc tính | Giá trị |
+|------------|---------|
+| **Dung lượng file trên ổ đĩa** | 826.63 MB |
+| **Số cột** | 18 |
+| **Phương pháp phân tích** | Đọc mẫu 10.000 dòng |
+| **Năm dữ liệu** | 2018 |
+| **Loại dữ liệu** | NYC Green Taxi Trip Records |
 
----
+> ⚠️ **Lưu ý:** Dataset quá lớn để đọc toàn bộ bằng Pandas trên môi trường RAM hạn chế. Vì vậy chỉ sử dụng sampling để khám phá cấu trúc dữ liệu.
 
-## 🗂️ Cấu trúc dữ liệu
+## 🗂️ Cấu trúc dữ liệu (từ mẫu 10.000 dòng)
 
 ### 🆔 Thông tin hệ thống
 
-| Tên cột | Kiểu dữ liệu | Null Count | Mô tả |
-|---------|--------------|------------|-------|
-| `VendorID` | int64 | 0 | Mã nhà cung cấp thiết bị ghi nhận chuyến đi<br>• `1` = Creative Mobile Technologies<br>• `2` = Verifone Inc. |
-| `store_and_fwd_flag` | object | 0 | Cờ lưu tạm dữ liệu trên xe do mất kết nối<br>• `N` = Không (8,790,612 chuyến)<br>• `Y` = Có (16,691 chuyến) |
-
----
+| Tên cột | Kiểu dữ liệu | Mô tả |
+|---------|--------------|-------|
+| `VendorID` | int64 | Mã nhà cung cấp thiết bị ghi nhận chuyến đi (1 = CMT, 2 = Verifone) |
+| `store_and_fwd_flag` | object | Cờ cho biết dữ liệu có được lưu tạm do mất kết nối hay không (Y/N) |
 
 ### 🕒 Thông tin thời gian
 
-| Tên cột | Kiểu dữ liệu | Null Count | Mô tả |
-|---------|--------------|------------|-------|
-| `lpep_pickup_datetime` | object | 0 | Thời điểm bắt đầu chuyến đi (đồng hồ tính tiền được bật) |
-| `lpep_dropoff_datetime` | object | 0 | Thời điểm kết thúc chuyến đi (đồng hồ tính tiền được tắt) |
+| Tên cột | Kiểu dữ liệu | Mô tả |
+|---------|--------------|-------|
+| `lpep_pickup_datetime` | datetime64 | Thời điểm bắt đầu chuyến đi |
+| `lpep_dropoff_datetime` | datetime64 | Thời điểm kết thúc chuyến đi |
 
-> **📌 Điều kiện hợp lệ:** `lpep_dropoff_datetime` > `lpep_pickup_datetime`
-
-**Thống kê:**
-- Số giá trị duy nhất (pickup): 7,410,484
-- Số giá trị duy nhất (dropoff): 7,402,074
-- Giá trị phổ biến nhất: 2018-04-18 11:11:39 (30 chuyến)
-
----
+> 📝 Dữ liệu gốc ở dạng chuỗi và đã được chuyển sang datetime.
 
 ### 📍 Thông tin vị trí
 
-| Tên cột | Kiểu dữ liệu | Null Count | Mean | Min | Max |
-|---------|--------------|------------|------|-----|-----|
-| `PULocationID` | int64 | 0 | 110.76 | 1 | 265 |
-| `DOLocationID` | int64 | 0 | 128.80 | 1 | 265 |
-
-> **📌 Lưu ý:** Có thể ánh xạ sang tên khu vực thông qua **Taxi Zone Lookup Table**
-
----
+| Tên cột | Kiểu dữ liệu | Mô tả |
+|---------|--------------|-------|
+| `PULocationID` | int64 | Mã khu vực đón khách |
+| `DOLocationID` | int64 | Mã khu vực trả khách |
 
 ### 🚗 Thông tin chuyến đi
 
-| Tên cột | Kiểu dữ liệu | Null Count | Mean | Min | Max | Mô tả |
-|---------|--------------|------------|------|-----|-----|-------|
-| `passenger_count` | int64 | 0 | 1.35 | 0 | 9 | Số lượng hành khách (do tài xế nhập) |
-| `trip_distance` | float64 | 0 | 3.18 | 0.0 | 8,005.68 | Quãng đường (mile) |
-| `trip_type` | float64 | 63 | 1.03 | 1.0 | 2.0 | `1` = Đón dọc đường<br>`2` = Điều phối |
-| `RatecodeID` | int64 | 0 | 1.11 | 1 | 99 | Mã loại giá cước |
-
-**Mã giá cước (RatecodeID):**
-- `1` = Chuẩn
-- `2` = JFK
-- `3` = Newark
-- `4` = Nassau/Westchester
-- `5` = Thỏa thuận
-- `6` = Đi chung
-
----
+| Tên cột | Kiểu dữ liệu | Mô tả |
+|---------|--------------|-------|
+| `passenger_count` | int64 | Số hành khách |
+| `trip_distance` | float64 | Quãng đường (mile) |
+| `trip_type` | int64 | Loại chuyến đi (1 = Street-hail, 2 = Dispatch) |
+| `RatecodeID` | int64 | Mã loại giá cước |
 
 ### 💰 Chi phí & phụ phí
 
-| Tên cột | Kiểu dữ liệu | Null Count | Mean | Min | Max | Mô tả |
-|---------|--------------|------------|------|-----|-----|-------|
-| `fare_amount` | float64 | 0 | $13.43 | -$10,445.84 | $10,445.84 | Tiền cước cơ bản |
-| `extra` | float64 | 0 | $0.33 | -$4.50 | $4.50 | Phụ phí giờ cao điểm/ban đêm |
-| `mta_tax` | float64 | 0 | $0.49 | -$82.91 | $82.91 | Thuế MTA (chuẩn: $0.50) |
-| `improvement_surcharge` | float64 | 0 | $0.29 | -$0.30 | $0.30 | Phụ phí cải thiện (chuẩn: $0.30) |
-| `tolls_amount` | float64 | 0 | $0.17 | -$765.54 | $765.54 | Tổng phí cầu đường |
+| Tên cột | Kiểu dữ liệu | Mô tả |
+|---------|--------------|-------|
+| `fare_amount` | float64 | Cước phí cơ bản |
+| `extra` | int64 | Phụ phí |
+| `mta_tax` | float64 | Thuế MTA |
+| `improvement_surcharge` | float64 | Phí cải thiện |
+| `tolls_amount` | int64 | Phí cầu đường |
+| `total_amount` | float64 | Tổng chi phí |
+
+### 💳 Thanh toán & tip
+
+| Tên cột | Kiểu dữ liệu | Mô tả |
+|---------|--------------|-------|
+| `tip_amount` | int64 | Tiền tip |
+| `payment_type` | int64 | Hình thức thanh toán |
+
+## 🧠 Phân loại kiểu dữ liệu
+
+### Numeric (15 cột)
+`VendorID`, `RatecodeID`, `PULocationID`, `DOLocationID`, `passenger_count`, `trip_distance`, `fare_amount`, `extra`, `mta_tax`, `tip_amount`, `tolls_amount`, `improvement_surcharge`, `total_amount`, `payment_type`, `trip_type`
+
+### Categorical (1 cột)
+`store_and_fwd_flag`
+
+### Datetime (2 cột)
+`lpep_pickup_datetime`, `lpep_dropoff_datetime`
 
 ---
 
-### 💳 Thanh toán & tiền tip
+## 📦 Cách sử dụng
 
-| Tên cột | Kiểu dữ liệu | Null Count | Mean | Min | Max | Mô tả |
-|---------|--------------|------------|------|-----|-----|-------|
-| `tip_amount` | float64 | 0 | $1.02 | -$485.55 | $485.55 | Tiền tip (chỉ qua thẻ) |
-| `total_amount` | float64 | 0 | $15.75 | -$10,528.75 | $10,528.75 | Tổng tiền thanh toán |
-| `payment_type` | int64 | 0 | 1.44 | 1 | 5 | Hình thức thanh toán |
+### Load dữ liệu mẫu
 
-**Hình thức thanh toán (payment_type):**
-- `1` = Thẻ
-- `2` = Tiền mặt
-- `3` = Miễn phí
-- `4` = Tranh chấp
-- `5` = Không rõ
-- `6` = Hủy chuyến
-
----
-
-## ⚠️ Vấn đề chất lượng dữ liệu
-
-### 🔍 Phát hiện dữ liệu bất thường
-
-| Vấn đề | Số lượng | Tỷ lệ |
-|--------|----------|-------|
-| **Trip distance = 0** | 102,276 | 1.16% |
-| **Fare amount ≤ 0** | 38,193 | 0.43% |
-| **Passenger count ≤ 0** | 12,371 | 0.14% |
-| **Trip type NULL** | 63 | <0.01% |
-
-### 📌 Các vấn đề cần lưu ý
-
-1. **Giá trị âm không hợp lý:**
-   - `fare_amount`, `tip_amount`, `tolls_amount`, `total_amount` có giá trị âm
-   - Có thể do giao dịch hoàn tiền hoặc lỗi nhập liệu
-
-2. **Giá trị ngoại lai (outliers):**
-   - `trip_distance` max = 8,005.68 miles (bất thường)
-   - `fare_amount` max = $10,445.84 (bất thường)
-   - `mta_tax` max = $82.91 (chuẩn chỉ $0.50)
-
-3. **Dữ liệu thiếu:**
-   - `trip_type`: 63 giá trị NULL
-   - Các cột khác: không có NULL
-
-4. **Tip tiền mặt không được ghi nhận:**
-   - `tip_amount` chỉ ghi nhận tip qua thẻ
-   - Ảnh hưởng đến phân tích hành vi tip
-
-5. **Passenger count do tài xế nhập:**
-   - Có thể không chính xác tuyệt đối
-   - Tồn tại 12,371 bản ghi có passenger_count ≤ 0
-
-> **👉 Vì vậy, bước tiền xử lý dữ liệu là bắt buộc trước khi khai phá dữ liệu.**
-
----
-
-## 🧹 Khuyến nghị tiền xử lý
-
-### Bước 1: Xử lý dữ liệu thời gian
 ```python
-# Chuyển đổi sang datetime
+import pandas as pd
+
+# Đọc mẫu 10,000 dòng
+df = pd.read_csv('green_taxi_2018.csv', nrows=10000)
+
+# Chuyển đổi cột datetime
 df['lpep_pickup_datetime'] = pd.to_datetime(df['lpep_pickup_datetime'])
 df['lpep_dropoff_datetime'] = pd.to_datetime(df['lpep_dropoff_datetime'])
 
-# Tính thời gian chuyến đi
-df['trip_duration'] = (df['lpep_dropoff_datetime'] - df['lpep_pickup_datetime']).dt.total_seconds() / 60
-
-# Lọc chuyến đi hợp lệ (dropoff > pickup)
-df = df[df['trip_duration'] > 0]
+# Xem thông tin cơ bản
+print(df.info())
+print(df.describe())
 ```
 
-### Bước 2: Xử lý outliers và giá trị bất thường
+### Đọc dữ liệu theo chunk (xử lý file lớn)
+
 ```python
-# Lọc trip_distance hợp lệ
-df = df[(df['trip_distance'] > 0) & (df['trip_distance'] < 100)]
-
-# Lọc fare_amount hợp lệ
-df = df[(df['fare_amount'] > 0) & (df['fare_amount'] < 500)]
-
-# Lọc passenger_count hợp lệ
-df = df[(df['passenger_count'] > 0) & (df['passenger_count'] <= 6)]
-
-# Lọc total_amount hợp lệ
-df = df[(df['total_amount'] > 0) & (df['total_amount'] < 500)]
+# Đọc từng chunk 50,000 dòng
+chunk_size = 50000
+for chunk in pd.read_csv('green_taxi_2018.csv', chunksize=chunk_size):
+    # Xử lý từng chunk
+    process_chunk(chunk)
 ```
 
-### Bước 3: Xử lý NULL
+### Sử dụng Dask cho big data
+
 ```python
-# Điền giá trị NULL cho trip_type (nếu cần)
-df['trip_type'].fillna(1, inplace=True)
+import dask.dataframe as dd
+
+# Đọc toàn bộ file với Dask
+ddf = dd.read_csv('green_taxi_2018.csv')
+
+# Thực hiện các phép tính
+result = ddf.groupby('VendorID')['total_amount'].mean().compute()
 ```
 
-### Bước 4: Tạo features mới
-```python
-# Trích xuất thời gian
-df['pickup_hour'] = df['lpep_pickup_datetime'].dt.hour
-df['pickup_day'] = df['lpep_pickup_datetime'].dt.day_name()
-df['pickup_month'] = df['lpep_pickup_datetime'].dt.month
-
-# Tính tốc độ trung bình (mph)
-df['avg_speed'] = df['trip_distance'] / (df['trip_duration'] / 60)
-
-# Phân loại giờ cao điểm
-df['is_rush_hour'] = df['pickup_hour'].apply(
-    lambda x: 1 if (7 <= x <= 9) or (17 <= x <= 19) else 0
-)
-```
 
 ---
 
