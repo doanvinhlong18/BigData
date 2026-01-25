@@ -15,9 +15,9 @@ print(f"Số cột: {len(df_head.columns)}")
 
 sample_df = pd.read_csv(file_path, nrows=10_000)
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("TỔNG QUAN TỪ MẪU 10,000 DÒNG")
-print("="*80)
+print("=" * 80)
 
 print(sample_df.head())
 print("\nShape mẫu:", sample_df.shape)
@@ -37,4 +37,3 @@ for col in sample_df.columns:
 
 print("\nSau khi parse datetime:")
 print(sample_df.dtypes)
-
