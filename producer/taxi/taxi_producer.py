@@ -64,6 +64,8 @@ def main():
                 # ===== trip =====
                 "passenger_count": to_int(row["passenger_count"], 0),
                 "trip_distance": to_float(row["trip_distance"]),
+                "store_and_fwd_flag": row["store_and_fwd_flag"],
+                "trip_type": to_int(row["trip_type"]),
                 # ===== payment =====
                 "payment_type": to_int(row["payment_type"]),
                 # ===== fare =====
@@ -73,6 +75,8 @@ def main():
                 "tip_amount": to_float(row["tip_amount"]),
                 "tolls_amount": to_float(row["tolls_amount"]),
                 "improvement_surcharge": to_float(row["improvement_surcharge"]),
+                "congestion_surcharge": to_float(row.get("congestion_surcharge")),
+                "ehail_fee": to_float(row.get("ehail_fee")),
                 "total_amount": to_float(row["total_amount"]),
             }
 
