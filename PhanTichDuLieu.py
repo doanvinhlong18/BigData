@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 
-file_path = "datasets/2018_taxi_trips.csv"
+file_path = "datasets/nyc_taxi_2018.csv"
 size_mb = os.path.getsize(file_path) / 1024**2
 
 print(f"Dung lượng file trên disk: {size_mb:.2f} MB")
@@ -10,7 +10,7 @@ print(f"Dung lượng file trên disk: {size_mb:.2f} MB")
 # ==============================
 # 1. Load dataset
 # ==============================
-df = pd.read_csv("datasets/2018_taxi_trips.csv")
+df = pd.read_csv("datasets/nyc_taxi_2018.csv")
 
 print("=" * 80)
 print("TỔNG QUAN BỘ DỮ LIỆU")
@@ -28,13 +28,15 @@ print("\n" + "=" * 80)
 print("DANH SÁCH CỘT & KIỂU DỮ LIỆU")
 print("=" * 80)
 
-col_info = pd.DataFrame({
-    "Column": df.columns,
-    "Dtype": df.dtypes.values,
-    "Non-Null Count": df.notnull().sum().values,
-    "Null Count": df.isnull().sum().values,
-    "Null Ratio (%)": (df.isnull().mean() * 100).round(2).values
-})
+col_info = pd.DataFrame(
+    {
+        "Column": df.columns,
+        "Dtype": df.dtypes.values,
+        "Non-Null Count": df.notnull().sum().values,
+        "Null Count": df.isnull().sum().values,
+        "Null Ratio (%)": (df.isnull().mean() * 100).round(2).values,
+    }
+)
 
 print(col_info)
 
@@ -85,29 +87,11 @@ print("CÁC YẾU TỐ QUAN TRỌNG CỦA BỘ DỮ LIỆU")
 print("=" * 80)
 
 important_features = {
-    "Thời gian": [
-        "lpep_pickup_datetime",
-        "lpep_dropoff_datetime"
-    ],
-    "Không gian": [
-        "PULocationID",
-        "DOLocationID"
-    ],
-    "Hành vi khách hàng": [
-        "passenger_count",
-        "trip_distance",
-        "trip_type"
-    ],
-    "Tài chính": [
-        "fare_amount",
-        "tip_amount",
-        "tolls_amount",
-        "total_amount"
-    ],
-    "Thanh toán": [
-        "payment_type",
-        "store_and_fwd_flag"
-    ]
+    "Thời gian": ["lpep_pickup_datetime", "lpep_dropoff_datetime"],
+    "Không gian": ["PULocationID", "DOLocationID"],
+    "Hành vi khách hàng": ["passenger_count", "trip_distance", "trip_type"],
+    "Tài chính": ["fare_amount", "tip_amount", "tolls_amount", "total_amount"],
+    "Thanh toán": ["payment_type", "store_and_fwd_flag"],
 }
 
 for group, cols in important_features.items():

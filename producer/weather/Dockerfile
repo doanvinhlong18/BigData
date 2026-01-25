@@ -9,3 +9,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY weather_producer.py .
 
 CMD ["python", "weather_producer.py"]
+

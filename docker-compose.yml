@@ -76,49 +76,49 @@ services:
   # ==================================================
   # Spark Master
   # ==================================================
-  spark-master:
-    build: ./spark
-    container_name: spark-master
-    hostname: spark-master
-    command: >
-      /opt/bitnami/spark/bin/spark-class
-      org.apache.spark.deploy.master.Master
-    ports:
-      - "7077:7077"
-      - "8080:8080"
-    depends_on:
-      - kafka
-      - minio
+  # spark-master:
+  #   build: ./spark
+  #   container_name: spark-master
+  #   hostname: spark-master
+  #   command: >
+  #     /opt/bitnami/spark/bin/spark-class
+  #     org.apache.spark.deploy.master.Master
+  #   ports:
+  #     - "7077:7077"
+  #     - "8080:8080"
+  #   depends_on:
+  #     - kafka
+  #     - minio
 
-  # ==================================================
-  # Spark Worker 1
-  # ==================================================
-  spark-worker-1:
-    build: ./spark
-    container_name: spark-worker-1
-    command: >
-      /opt/bitnami/spark/bin/spark-class
-      org.apache.spark.deploy.worker.Worker
-      spark://spark-master:7077
-    depends_on:
-      - spark-master
-    ports:
-      - "8081:8081"
+  # # ==================================================
+  # # Spark Worker 1
+  # # ==================================================
+  # spark-worker-1:
+  #   build: ./spark
+  #   container_name: spark-worker-1
+  #   command: >
+  #     /opt/bitnami/spark/bin/spark-class
+  #     org.apache.spark.deploy.worker.Worker
+  #     spark://spark-master:7077
+  #   depends_on:
+  #     - spark-master
+  #   ports:
+  #     - "8081:8081"
 
-  # ==================================================
-  # Spark Worker 2
-  # ==================================================
-  spark-worker-2:
-    build: ./spark
-    container_name: spark-worker-2
-    command: >
-      /opt/bitnami/spark/bin/spark-class
-      org.apache.spark.deploy.worker.Worker
-      spark://spark-master:7077
-    depends_on:
-      - spark-master
-    ports:
-      - "8082:8081"
+  # # ==================================================
+  # # Spark Worker 2
+  # # ==================================================
+  # spark-worker-2:
+  #   build: ./spark
+  #   container_name: spark-worker-2
+  #   command: >
+  #     /opt/bitnami/spark/bin/spark-class
+  #     org.apache.spark.deploy.worker.Worker
+  #     spark://spark-master:7077
+  #   depends_on:
+  #     - spark-master
+  #   ports:
+  #     - "8082:8081"
 
 volumes:
   minio_data:

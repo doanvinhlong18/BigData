@@ -1,70 +1,90 @@
-# kafka/producer/taxi_producer.py
-
 import csv
 import time
+import json
 from datetime import datetime
 from kafka import KafkaProducer
-import json
+
 
 KAFKA_BOOTSTRAP_SERVERS = "kafka:9092"
-TAXI_TOPIC = "nyc_taxi_trips"
-CSV_PATH = "../../datasets/2018_taxi_trips.csv"
-SPEED_FACTOR = 3600  # 1 hour data = 1 second realtime
+TOPIC = "nyc_green_taxi_trips"
+CSV_PATH = "../datasets/nyc_taxi_2018.csv"
+
+# 1 hour event time = 1 second realtime
+SPEED_FACTOR = 3600
 
 
-class RealtimeReplayProducer:
-    def __init__(self, topic, bootstrap_servers, speed_factor=3600):
-        self.topic = topic
-        self.speed_factor = speed_factor
-
-        self.producer = KafkaProducer(
-            bootstrap_servers=bootstrap_servers,
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        )
-
-        self.prev_event_time = None
-
-    def parse_time(self, value):
-        return datetime.fromisoformat(value)
-
-    def send_event(self, event, event_time_field):
-        event_time = self.parse_time(event[event_time_field])
-
-        if self.prev_event_time:
-            delta = (event_time - self.prev_event_time).total_seconds()
-            if delta > 0:
-                time.sleep(delta / self.speed_factor)
-
-        self.producer.send(self.topic, value=event)
-        self.prev_event_time = event_time
+def to_int(value, default=None):
+    try:
+        return int(float(value))
+    except:
+        return default
 
 
-CSV_PATH = "../../../datasets/2018_taxi_trips.csv"
+def to_float(value, default=0.0):
+    try:
+        return float(value)
+    except:
+        return default
 
 
-def run():
-    producer = RealtimeReplayProducer(
-        topic=TAXI_TOPIC,
+def parse_time(ts: str) -> datetime:
+    return datetime.fromisoformat(ts)
+
+
+def main():
+    producer = KafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        speed_factor=SPEED_FACTOR,
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
     )
+
+    prev_event_time = None
 
     with open(CSV_PATH, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
 
         for row in reader:
+            # Trip COMPLETED event
+            event_time = parse_time(row["lpep_dropoff_datetime"])
+
+            if prev_event_time:
+                delta = (event_time - prev_event_time).total_seconds()
+                if delta > 0:
+                    time.sleep(delta / SPEED_FACTOR)
+
             event = {
-                "vendor_id": row["VendorID"],
-                "pickup_datetime": row["tpep_pickup_datetime"],
-                "dropoff_datetime": row["tpep_dropoff_datetime"],
-                "pu_location_id": int(row["PULocationID"]),
-                "do_location_id": int(row["DOLocationID"]),
-                "fare_amount": float(row["fare_amount"]),
-                "trip_distance": float(row["trip_distance"]),
+                # ===== identifiers =====
+                "vendor_id": to_int(row["VendorID"]),
+                "ratecode_id": to_int(row["RatecodeID"]),
+                # ===== time =====
+                "pickup_datetime": row["lpep_pickup_datetime"],
+                "dropoff_datetime": row["lpep_dropoff_datetime"],
+                # ===== location =====
+                "pu_location_id": to_int(row["PULocationID"]),
+                "do_location_id": to_int(row["DOLocationID"]),
+                # ===== trip =====
+                "passenger_count": to_int(row["passenger_count"], 0),
+                "trip_distance": to_float(row["trip_distance"]),
+                # ===== payment =====
+                "payment_type": to_int(row["payment_type"]),
+                # ===== fare =====
+                "fare_amount": to_float(row["fare_amount"]),
+                "extra": to_float(row["extra"]),
+                "mta_tax": to_float(row["mta_tax"]),
+                "tip_amount": to_float(row["tip_amount"]),
+                "tolls_amount": to_float(row["tolls_amount"]),
+                "improvement_surcharge": to_float(row["improvement_surcharge"]),
+                "total_amount": to_float(row["total_amount"]),
             }
 
-            producer.send_event(event, "pickup_datetime")
+            producer.send(TOPIC, event)
+            producer.flush()
+
+            print(
+                f"[SEND] ingestion={datetime.now()} " f"dropoff_event_time={event_time}"
+            )
+
+            prev_event_time = event_time
 
 
 if __name__ == "__main__":
-    run()
+    main()
