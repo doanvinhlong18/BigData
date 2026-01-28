@@ -1,3 +1,2 @@
-*.csv filter=lfs diff=lfs merge=lfs -text
-*.sh text eol=lf
-
+*.csv     filter=lfs diff=lfs merge=lfs -text
+*.parquet filter=lfs diff=lfs merge=lfs -text
