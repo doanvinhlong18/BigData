@@ -1,0 +1,48 @@
+Thông tin cơ bản
+| Thuộc tính                 | Giá trị                               |
+| -------------------------- | ------------------------------------- |
+| **Số bản ghi**             | 2,303,880                             |
+| **Số cột**                 | 7                                     |
+| **Dung lượng file**        | ~123 MB                               |
+| **Khoảng thời gian**       | 01/01/2018 – 31/12/2018               |
+| **Độ phân giải thời gian** | Theo giờ (hourly)                     |
+| **Không gian**             | Theo Taxi Zone (`LocationID`)         |
+| **Loại dữ liệu**           | Weather – Spatio-temporal Time Series |
+
+Thông tin thời tiết
+| Tên cột          | Kiểu dữ liệu | Mean   | Min   | Max    | Mô tả                          |
+| ---------------- | ------------ | ------ | ----- | ------ | ------------------------------ |
+| `temperature_2m` | float64      | 12.15  | -22.4 | 34.70  | Nhiệt độ không khí ở độ cao 2m |
+| `precipitation`  | float64      | 0.19   | 0.0   | 15.70  | Tổng lượng mưa + tuyết (mm)    |
+| `rain`           | float64      | 0.18   | 0.0   | 15.70  | Lượng mưa (mm)                 |
+| `snowfall`       | float64      | 0.01   | 0.0   | 3.85   | Lượng tuyết rơi (mm)           |
+| `cloud_cover`    | int64        | 62.15  | 0.0   | 100.00 | Độ che phủ mây (%)             |
+
+Thông tin khác
+| Tên cột      | Kiểu dữ liệu | Null Count | Mô tả                                   |
+| ------------ | ------------ | ---------- | ----------------------------------------|
+| `LocationID` | int64        | 0          | Mã Taxi Zone của NYC (1–263)            |
+| `datetime`   | object       | 0          | Thời điểm ghi nhận thời tiết (theo giờ) |
+
+
+Khuyến nghị
+1. Chuẩn hóa dữ liệu thời gian
+df['datetime'] = pd.to_datetime(df['datetime'])
+df = df.sort_values(['LocationID', 'datetime'])
+
+2. Tạo biến thời tiết tổng hợp
+df['is_rainy'] = (df['rain'] > 0).astype(int)
+df['is_snowy'] = (df['snowfall'] > 0).astype(int)
+df['bad_weather'] = ((df['rain'] > 0) | (df['snowfall'] > 0)).astype(int)
+
+3. Xử lí các giá trị cực
+
+4. Feature engineering cho time series
+df['hour'] = df['datetime'].dt.hour
+df['day_of_week'] = df['datetime'].dt.dayofweek
+df['month'] = df['datetime'].dt.month
+df['is_weekend'] = df['day_of_week'].isin([5,6]).astype(int)
+
+5. Tạo lag features & rolling statistics
+
+6. Kết hợp với Taxi Trip Dataset
