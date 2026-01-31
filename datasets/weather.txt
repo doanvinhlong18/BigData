@@ -1,48 +1,54 @@
 Thông tin cơ bản
-| Thuộc tính                 | Giá trị                               |
-| -------------------------- | ------------------------------------- |
-| **Số bản ghi**             | 2,303,880                             |
-| **Số cột**                 | 7                                     |
-| **Dung lượng file**        | ~123 MB                               |
-| **Khoảng thời gian**       | 01/01/2018 – 31/12/2018               |
-| **Độ phân giải thời gian** | Theo giờ (hourly)                     |
-| **Không gian**             | Theo Taxi Zone (`LocationID`)         |
-| **Loại dữ liệu**           | Weather – Spatio-temporal Time Series |
+
+| Thuộc tính                 | Giá trị                                  |
+| -------------------------- | ---------------------------------------- |
+| **Số bản ghi**             | **2,303,880**                            |
+| **Số cột**                 | **13**                                   |
+| **Dung lượng file**        | **~164 MB**                              |
+| **Khoảng thời gian**       | **01/01/2025 – 31/12/2025**              |
+| **Độ phân giải thời gian** | Theo giờ (Hourly)                        |
+| **Không gian**             | Theo LocationID (Taxi Zone / khu vực đo) |
+| **Loại dữ liệu**           | Weather – Spatio-temporal Time Series    |
 
 Thông tin thời tiết
-| Tên cột          | Kiểu dữ liệu | Mean   | Min   | Max    | Mô tả                          |
-| ---------------- | ------------ | ------ | ----- | ------ | ------------------------------ |
-| `temperature_2m` | float64      | 12.15  | -22.4 | 34.70  | Nhiệt độ không khí ở độ cao 2m |
-| `precipitation`  | float64      | 0.19   | 0.0   | 15.70  | Tổng lượng mưa + tuyết (mm)    |
-| `rain`           | float64      | 0.18   | 0.0   | 15.70  | Lượng mưa (mm)                 |
-| `snowfall`       | float64      | 0.01   | 0.0   | 3.85   | Lượng tuyết rơi (mm)           |
-| `cloud_cover`    | int64        | 62.15  | 0.0   | 100.00 | Độ che phủ mây (%)             |
+
+| Tên cột                     | Kiểu dữ liệu | Đơn vị | Mô tả                            |
+| --------------------------- | ------------ | ------ | -------------------------------- |
+| `temperature_2m`            | float64      | °C     | Nhiệt độ không khí tại độ cao 2m |
+| `relative_humidity_2m`      | float64      | %      | Độ ẩm tương đối tại 2m           |
+| `surface_pressure`          | float64      | hPa    | Áp suất khí quyển tại mặt đất    |
+| `precipitation`             | float64      | mm     | Tổng lượng mưa + tuyết           |
+| `rain`                      | float64      | mm     | Lượng mưa lỏng                   |
+| `snowfall`                  | float64      | mm     | Lượng tuyết rơi                  |
+| `cloud_cover`               | float64      | %      | Độ che phủ mây                   |
+| `wind_speed_10m`            | float64      | km/h   | Tốc độ gió tại 10m               |
+| `wind_gusts_10m`            | float64      | km/h   | Tốc độ gió giật                  |
+| `soil_temperature_0_to_7cm` | float64      | °C     | Nhiệt độ đất tầng 0–7 cm         |
+
 
 Thông tin khác
-| Tên cột      | Kiểu dữ liệu | Null Count | Mô tả                                   |
-| ------------ | ------------ | ---------- | ----------------------------------------|
-| `LocationID` | int64        | 0          | Mã Taxi Zone của NYC (1–263)            |
-| `datetime`   | object       | 0          | Thời điểm ghi nhận thời tiết (theo giờ) |
 
+| Tên cột        | Kiểu dữ liệu | Null | Mô tả                                      |
+| -------------- | ------------ | ---- | ------------------------------------------ |
+| `LocationID`   | int64        | 0    | ID khu vực đo (1-163) 			    |
+| `datetime`     | datetime     | 0    | Thời điểm quan sát theo giờ                |
+| `weather_code` | int64        | 0    | Mã trạng thái thời tiết tổng quát          |
 
-Khuyến nghị
-1. Chuẩn hóa dữ liệu thời gian
-df['datetime'] = pd.to_datetime(df['datetime'])
-df = df.sort_values(['LocationID', 'datetime'])
+weather_code
+Các mã xuất hiện trong dataset
 
-2. Tạo biến thời tiết tổng hợp
-df['is_rainy'] = (df['rain'] > 0).astype(int)
-df['is_snowy'] = (df['snowfall'] > 0).astype(int)
-df['bad_weather'] = ((df['rain'] > 0) | (df['snowfall'] > 0)).astype(int)
-
-3. Xử lí các giá trị cực
-
-4. Feature engineering cho time series
-df['hour'] = df['datetime'].dt.hour
-df['day_of_week'] = df['datetime'].dt.dayofweek
-df['month'] = df['datetime'].dt.month
-df['is_weekend'] = df['day_of_week'].isin([5,6]).astype(int)
-
-5. Tạo lag features & rolling statistics
-
-6. Kết hợp với Taxi Trip Dataset
+| Weather Code | Nhóm thời tiết | Mô tả                 |
+| ------------ | -------------- | --------------------- |
+| **0**        | Clear          | Trời quang, không mây |
+| **1**        | Clear          | Gần như quang         |
+| **2**        | Cloudy         | Có mây rải rác        |
+| **3**        | Cloudy         | Trời nhiều mây        |
+| **51**       | Drizzle        | Mưa phùn nhẹ          |
+| **53**       | Drizzle        | Mưa phùn vừa          |
+| **55**       | Drizzle        | Mưa phùn dày          |
+| **61**       | Rain           | Mưa nhẹ               |
+| **63**       | Rain           | Mưa vừa               |
+| **65**       | Rain           | Mưa to                |
+| **71**       | Snow           | Tuyết nhẹ             |
+| **73**       | Snow           | Tuyết vừa             |
+| **75**       | Snow           | Tuyết dày             |
