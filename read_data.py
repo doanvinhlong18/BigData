@@ -1,6 +1,5 @@
-import pandas as pd
+import pyarrow.parquet as pq
 
-df = pd.read_parquet("datasets/request_table/request_2025_01.parquet")
+df = pq.ParquetFile("datasets/response_table/response_2025_06.parquet")
 
-print(df.head())
-print(df.info())
+print(df.schema_arrow)
