@@ -153,3 +153,118 @@ Cả 11 tệp đều có cùng schema với **25 cột**.
 ---
 
 *Tập dữ liệu này rất phù hợp cho phân tích di động đô thị quy mô lớn, tác động chính sách và kinh tế vận tải.*
+## 9. Định Hướng Nghiên Cứu Được Lựa Chọn
+
+### Phân Tích & Dự Báo Nhu Cầu Đặt Xe Dựa Trên Ngữ Cảnh (Context-Aware Ride Demand Analysis)
+
+Nhóm nghiên cứu lựa chọn hướng nghiên cứu chính là:
+
+**Phân tích và mô hình hóa nhu cầu đặt xe HVFHV dựa trên các yếu tố thời gian, không gian, kinh tế chuyến đi và điều kiện thời tiết.**
+
+Mục tiêu là xây dựng cái nhìn toàn diện về hành vi nhu cầu di chuyển đô thị và xác định các yếu tố ảnh hưởng mạnh nhất đến khối lượng chuyến đi.
+
+---
+
+### 9.1 Mục Tiêu Nghiên Cứu
+
+- Xác định các yếu tố ảnh hưởng đến số lượng chuyến đi HVFHV
+- Phân tích sự thay đổi nhu cầu theo:
+  - Thời gian (giờ, ngày, tháng)
+  - Không gian (Taxi Zone – `LocationID`)
+  - Đặc điểm chuyến đi (giá, quãng đường, thời gian)
+  - Điều kiện thời tiết (nhiệt độ, mưa, tuyết, gió...)
+- Xây dựng mô hình dự báo nhu cầu đặt xe theo khu vực và thời điểm
+
+---
+
+### 9.2 Các Nhóm Biến Phân Tích
+
+#### 1. Biến Thời Gian
+
+- `request_datetime`
+- `pickup_datetime` → Trích xuất:
+  - Giờ trong ngày
+  - Ngày trong tuần
+  - Cuối tuần / ngày thường
+  - Tháng / mùa
+
+#### 2. Biến Không Gian
+
+- `PULocationID`
+- `DOLocationID`
+
+**Phân tích:**
+- Mật độ nhu cầu theo khu vực
+- Sự hình thành "mobility hotspot" theo thời gian
+
+#### 3. Biến Kinh Tế & Chuyến Đi
+
+- `base_passenger_fare`
+- `trip_miles`
+- `trip_time`
+- `congestion_surcharge`
+- `cbd_congestion_fee`
+- `airport_fee`
+
+**Nhằm đánh giá:**
+- Giá và phụ phí có làm thay đổi nhu cầu không
+- Khu vực có phí cao có giảm số chuyến đi không
+
+#### 4. Biến Thời Tiết (từ dataset bổ sung)
+
+Sau khi join với dataset thời tiết theo:
+```
+(LocationID + thời điểm theo giờ)
+```
+
+**Sử dụng các biến:**
+- Nhiệt độ
+- Lượng mưa
+- Tuyết rơi
+- Độ ẩm
+- Gió
+- Mây che phủ
+
+**Để phân tích:**
+- Mưa có làm tăng nhu cầu gọi xe không?
+- Tuyết có làm giảm số chuyến đi không?
+- Nhu cầu có nhạy cảm với thời tiết theo từng khu vực không?
+
+---
+
+### 9.3 Câu Hỏi Nghiên Cứu Chính
+
+1. Nhu cầu đặt xe thay đổi như thế nào theo giờ và ngày trong tuần?
+2. Những khu vực nào có nhu cầu cao ổn định theo thời gian?
+3. Thời tiết ảnh hưởng đến nhu cầu ở mức độ nào?
+4. Phí tắc nghẽn và phụ phí có làm thay đổi hành vi di chuyển không?
+5. Có thể dự đoán số chuyến đi trong tương lai dựa trên:
+   - Thời gian
+   - Khu vực
+   - Thời tiết
+   - Chính sách phí
+
+---
+
+### 9.4 Bài Toán Học Máy Đề Xuất
+
+| Bài toán | Mô tả |
+|----------|-------|
+| **Demand Forecasting** | Dự đoán số chuyến đi theo `LocationID` và giờ |
+| **Feature Importance** | Xác định yếu tố ảnh hưởng mạnh nhất đến nhu cầu |
+| **Spatial–Temporal Modeling** | Mô hình hóa nhu cầu theo không gian và thời gian |
+
+**Các mô hình có thể sử dụng:**
+- Regression (XGBoost, LightGBM)
+- Time Series (LSTM, Prophet)
+- Spatio-temporal models
+
+---
+
+### 9.5 Ý Nghĩa Nghiên Cứu
+
+Hướng nghiên cứu này giúp:
+- Hiểu rõ động lực nhu cầu vận tải đô thị
+- Hỗ trợ hệ thống điều phối tài xế
+- Cải thiện dự báo nhu cầu thời gian thực
+- Đánh giá tác động của thời tiết và chính sách lên hành vi di chuyển
