@@ -31,6 +31,12 @@ def to_float(value, default=None):
         return default
 
 
+def normalize_utc(dt):
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def parse_time(ts):
     try:
         if ts is None:
@@ -54,10 +60,15 @@ def parse_time(ts):
 
 
 def sleep_by_event_time(prev_time, curr_time):
-    if prev_time:
-        delta = (curr_time - prev_time).total_seconds()
-        if delta > 0:
-            time.sleep(delta / SPEED_FACTOR)
+    if prev_time is None or curr_time is None:
+        return
+
+    prev_time = normalize_utc(prev_time)
+    curr_time = normalize_utc(curr_time)
+
+    delta = (curr_time - prev_time).total_seconds()
+    if delta > 0:
+        time.sleep(delta / SPEED_FACTOR)
 
 
 def read_and_send(file_path, producer, start_time):
@@ -94,7 +105,7 @@ def read_and_send(file_path, producer, start_time):
                 "total_amount": to_float(row.get("total_amount")),
             }
 
-            producer.send(TOPIC, key=row["trip_id"].encode(), value=event)
+            producer.send(TOPIC, key=str(row["trip_id"]).encode("utf-8"), value=event)
 
             print(f"[SEND] request, event_time={current_event_time}")
 
@@ -118,7 +129,7 @@ def main():
 
         # ===== BOOKED EVENTS =====
         booked_file = (
-            f"../../datasets/sorted_request_table/request_2025_{file_idx}.parquet"
+            f"../datasets/sorted_request_table/request_2025_{file_idx}.parquet"
         )
         current_time = read_and_send(
             booked_file,

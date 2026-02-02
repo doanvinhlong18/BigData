@@ -8,8 +8,8 @@ from kafka import KafkaProducer
 
 
 KAFKA_BOOTSTRAP_SERVERS = "kafka:9092"
-TOPIC = "nyc_weather_2018"
-CSV_PATH = "../datasets/nyc_weather_2018.csv"
+TOPIC = "nyc_weather"
+CSV_PATH = "../datasets/weather_full.csv"
 
 # 1 hour weather data = 1 second realtime
 SPEED_FACTOR = 3600
