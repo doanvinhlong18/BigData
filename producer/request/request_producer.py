@@ -1,7 +1,7 @@
 import pyarrow.parquet as pq
 import time
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from kafka import KafkaProducer
 
 KAFKA_BOOTSTRAP_SERVERS = "kafka:9092"
@@ -15,24 +15,42 @@ START_EVENT_TIME = datetime(2025, 1, 1, 0, 0, 0)
 
 def to_int(value, default=None):
     try:
+        if value is None or str(value).strip().lower() in ("", "null"):
+            return default
         return int(float(value))
     except:
         return default
 
 
-def to_float(value, default=0.0):
+def to_float(value, default=None):
     try:
+        if value is None or str(value).strip().lower() in ("", "null"):
+            return default
         return float(value)
     except:
         return default
 
 
-def parse_time(ts) -> datetime:
-    if isinstance(ts, datetime):
-        return ts
-    if hasattr(ts, "to_pydatetime"):
-        return ts.to_pydatetime()
-    return datetime.fromisoformat(str(ts))
+def parse_time(ts):
+    try:
+        if ts is None:
+            return None
+
+        if isinstance(ts, datetime):
+            return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+        if hasattr(ts, "to_pydatetime"):
+            dt = ts.to_pydatetime()
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+        s = str(ts).strip()
+        if s == "" or s.lower() == "null":
+            return None
+
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except:
+        return None
 
 
 def sleep_by_event_time(prev_time, curr_time):
@@ -56,7 +74,6 @@ def read_and_send(file_path, producer, start_time):
 
         for values in rows:
             row = dict(zip(col_names, values))
-            # giả lập event-time tăng dần theo dữ liệu
             current_event_time = parse_time(row["request_datetime"])
 
             sleep_by_event_time(prev_event_time, current_event_time)
@@ -64,17 +81,13 @@ def read_and_send(file_path, producer, start_time):
             event = {
                 "event_type": "request",
                 "event_time": current_event_time.isoformat(),
-                # ===== identifiers =====
                 "trip_id": row.get("trip_id"),
                 "hvfhs_license_num": row.get("hvfhs_license_num"),
                 "dispatching_base_num": row.get("dispatching_base_num"),
-                # ===== location =====
                 "pu_location_id": to_int(row.get("PULocationID")),
                 "do_location_id": to_int(row.get("DOLocationID")),
-                # ===== trip =====
                 "trip_miles": to_float(row.get("trip_miles")),
                 "trip_time": to_int(row.get("trip_time")),
-                # ===== fare =====
                 "base_passenger_fare": to_float(row.get("base_passenger_fare")),
                 "tips": to_float(row.get("tips")),
                 "tolls": to_float(row.get("tolls")),
