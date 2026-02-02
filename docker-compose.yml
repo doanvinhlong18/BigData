@@ -53,9 +53,19 @@ services:
   # ==================================================
   # Producer
   # ==================================================
-  taxi-producer:
-    build: ./producer/taxi
-    container_name: taxi-producer
+  request-producer:
+    build: ./producer/request
+    container_name: request-producer
+    depends_on:
+      - kafka
+    volumes:
+      - ./datasets:/datasets
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      
+  response-producer:
+    build: ./producer/response
+    container_name: response-producer
     depends_on:
       - kafka
     volumes:
