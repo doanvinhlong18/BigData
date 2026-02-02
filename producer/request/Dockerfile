@@ -6,6 +6,6 @@ COPY requirements.txt .
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY taxi_producer.py .
+COPY request_producer.py .
 
-CMD ["python", "taxi_producer.py"]
+CMD ["python", "request_producer.py"]
