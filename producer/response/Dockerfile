@@ -6,6 +6,6 @@ COPY requirements.txt .
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY respone_producer.py .
+COPY response_producer.py .
 
-CMD ["python", "respone_producer.py"]
+CMD ["python", "response_producer.py"]
