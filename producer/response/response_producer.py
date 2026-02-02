@@ -115,7 +115,9 @@ def main():
     for i in range(1, 13):
         file_idx = f"{i:02d}"
 
-        booked_file = f"respone_2025_{file_idx}.parquet"
+        booked_file = (
+            f"../../datasets/sorted_response_table/respone_2025_{file_idx}.parquet"
+        )
         current_time = read_and_send(
             booked_file,
             producer=producer,

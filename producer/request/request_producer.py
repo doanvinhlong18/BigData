@@ -117,7 +117,9 @@ def main():
         file_idx = f"{i:02d}"
 
         # ===== BOOKED EVENTS =====
-        booked_file = f"request_2025_{file_idx}.parquet"
+        booked_file = (
+            f"../../datasets/sorted_request_table/request_2025_{file_idx}.parquet"
+        )
         current_time = read_and_send(
             booked_file,
             producer=producer,
