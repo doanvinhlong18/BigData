@@ -1,134 +1,463 @@
-version: "3.8"
+# ============================================================
+#  NYC TAXI + WEATHER BIG DATA STREAMING PIPELINE
+# ============================================================
+# Kiến trúc: Lambda Architecture (Bronze/Silver/Gold layers)
+# Tech Stack: Kafka, Spark Streaming, Delta Lake, MinIO (S3-compatible)
+#
+# DEPLOYMENT GUIDE:
+#   1. Start: docker-compose up -d
+#   2. Check logs: docker-compose logs -f [service_name]
+#   3. Stop: docker-compose down
+#   4. Clean volumes: docker-compose down -v
+#
+# PORTS:
+#   - 2181: Zookeeper
+#   - 9092: Kafka
+#   - 9000: MinIO S3 API
+#   - 9001: MinIO Web Console (http://localhost:9001)
+#   - 7077: Spark Master
+#   - 8080: Spark Web UI (http://localhost:8080)
+#
+# CREDENTIALS:
+#   - MinIO: minioadmin / minioadmin
+# ============================================================
 
 services:
-  # ==================================================
-  # Zookeeper (Kafka internal dependency – không đụng code)
-  # ==================================================
+
+  # ────────────────────────────────────────────────────────────
+  # ZOOKEEPER - Quản lý Kafka cluster coordination
+  # ────────────────────────────────────────────────────────────
+  # Zookeeper lưu metadata của Kafka như broker info, topics, partitions
+  # KHÔNG SỬA: Các port và config mặc định đã được tối ưu
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
     environment:
+      # Port client kết nối đến Zookeeper
       ZOOKEEPER_CLIENT_PORT: 2181
+      # Đơn vị thời gian cơ bản (ms) cho heartbeat và session timeout
       ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
+    # Healthcheck để đảm bảo Zookeeper ready trước khi start Kafka
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # ==================================================
-  # Kafka Broker
-  # ==================================================
+  # ────────────────────────────────────────────────────────────
+  # KAFKA - Message broker cho streaming events
+  # ────────────────────────────────────────────────────────────
+  # Topics: 
+  #   - nyc_weather (1 partition)
+  #   - nyc_taxi_events (3 partitions)
+  # 
+  # TROUBLESHOOTING:
+  #   - Nếu Kafka crash: kiểm tra xem Zookeeper đã healthy chưa
+  #   - Nếu consumer lag cao: tăng số partitions hoặc scale worker
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy  # Đợi Zookeeper ready
     ports:
-      - "9092:9092"
+      - "9092:9092"  # Port cho producer/consumer từ host machine
     environment:
       KAFKA_BROKER_ID: 1
+      # Địa chỉ Zookeeper để Kafka kết nối
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-
+      
+      # LISTENERS: địa chỉ Kafka lắng nghe connections
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      
+      # ADVERTISED_LISTENERS: địa chỉ mà client sẽ dùng để kết nối
+      # Dùng kafka:9092 cho internal Docker network
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-
+      
+      # Replication factor = 1 vì chỉ có 1 broker (dev environment)
+      # PRODUCTION: tăng lên 3 và thêm nhiều broker
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      
+      # Tắt auto-create topics để kiểm soát partition count
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      
+      # Lưu message trong 24h, sau đó tự động xóa
+      # PRODUCTION: tăng lên 168h (7 ngày) hoặc dựa trên disk space
+      KAFKA_LOG_RETENTION_HOURS: 24
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
 
-  # ==================================================
-  # MinIO (S3 giả lập – chỉ Bronze & Silver)
-  # ==================================================
+  # ────────────────────────────────────────────────────────────
+  # MINIO - S3-compatible object storage (Data Lake)
+  # ────────────────────────────────────────────────────────────
+  # Lưu trữ Delta Lake theo medallion architecture:
+  #   - bronze/: Raw data từ Kafka (append-only)
+  #   - silver/: Cleaned, transformed data
+  #   - gold/: Aggregated, business-ready data
+  #
+  # WEB UI: http://localhost:9001
+  # Credentials: minioadmin / minioadmin
+  #
+  # PRODUCTION NOTES:
+  #   - Thay minioadmin bằng credentials mạnh hơn
+  #   - Enable SSL/TLS
+  #   - Setup backup policy cho buckets
   minio:
-    image: minio/minio:RELEASE.2024-01-13T07-53-03Z
+    image: minio/minio:latest
     container_name: minio
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9000:9000"   # S3 API endpoint
+      - "9001:9001"   # Web Console
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
+      # Persist data giữa các lần restart
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # ==================================================
-  # Producer
-  # ==================================================
-  request-producer:
-    build: ./producer/request
-    container_name: request-producer
+  # ────────────────────────────────────────────────────────────
+  # MINIO SETUP - Tạo buckets (chạy 1 lần)
+  # ────────────────────────────────────────────────────────────
+  # Script này tự động tạo 3 buckets: bronze, silver, gold
+  # Set anonymous download để Spark có thể đọc được
+  #
+  # TROUBLESHOOTING:
+  #   - Nếu buckets không được tạo: xóa volume và restart
+  #     docker-compose down -v && docker-compose up -d
+  minio-setup:
+    image: minio/mc:latest
+    container_name: minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        # Tạo alias để kết nối đến MinIO server
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        
+        # Tạo buckets nếu chưa tồn tại
+        mc mb --ignore-existing local/bronze &&
+        mc mb --ignore-existing local/silver &&
+        mc mb --ignore-existing local/gold &&
+        
+        # Set public read access (chỉ dùng cho dev/test)
+        # PRODUCTION: remove dòng này và dùng IAM policies
+        mc anonymous set download local/bronze &&
+        mc anonymous set download local/silver &&
+        mc anonymous set download local/gold &&
+        
+        echo '[SETUP] ✅ Buckets created: bronze, silver, gold'
+
+  # ────────────────────────────────────────────────────────────
+  # KAFKA SETUP - Tạo topics (chạy 1 lần)
+  # ────────────────────────────────────────────────────────────
+  # Topics được tạo:
+  #   1. nyc_weather: 1 partition (data ít, không cần parallel)
+  #   2. nyc_taxi_events: 3 partitions (data nhiều, cần throughput cao)
+  #
+  # SCALE UP:
+  #   - Để tăng throughput: tăng số partitions
+  #   - Để tăng reliability: tăng replication-factor
+  #   - Command: kafka-topics --alter --partitions 6 --topic nyc_taxi_events
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        # Topic 1: Weather data (1 partition vì data rate thấp)
+        /usr/bin/kafka-topics --bootstrap-server kafka:9092 \
+          --create --if-not-exists \
+          --topic nyc_weather \
+          --partitions 1 \
+          --replication-factor 1 &&
+        
+        # Topic 2: Taxi events (3 partitions cho parallel processing)
+        /usr/bin/kafka-topics --bootstrap-server kafka:9092 \
+          --create --if-not-exists \
+          --topic nyc_taxi_events \
+          --partitions 3 \
+          --replication-factor 1 &&
+        
+        echo '[SETUP] ✅ Topics created: nyc_weather, nyc_taxi_events'
+
+  # ────────────────────────────────────────────────────────────
+  # SPARK MASTER - Cluster coordinator
+  # ────────────────────────────────────────────────────────────
+  # Quản lý resource allocation và scheduling cho Spark jobs
+  # 
+  # WEB UI: http://localhost:8080
+  # - Xem số workers đang active
+  # - Monitor running applications
+  # - Check resource usage (CPU, memory)
+  #
+  # PRODUCTION:
+  #   - Deploy multiple masters với Zookeeper cho HA
+  #   - Increase memory nếu có nhiều concurrent jobs
+  spark-master:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: spark-master
+    hostname: spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "7077:7077"   # Spark cluster internal communication
+      - "8080:8080"   # Spark Master Web UI
+    volumes:
+      # Mount toàn bộ project để Spark có thể access jobs và data
+      - ./:/opt/spark/app
     depends_on:
       - kafka
-    volumes:
-      - ./datasets:/datasets
+      - minio
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      
-  response-producer:
-    build: ./producer/response
-    container_name: response-producer
-    depends_on:
-      - kafka
-    volumes:
-      - ./datasets:/datasets
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
 
+  # ────────────────────────────────────────────────────────────
+  # SPARK WORKER - Executor node
+  # ────────────────────────────────────────────────────────────
+  # Worker node thực thi các tasks được phân bổ từ Master
+  #
+  # SCALE OUT:
+  #   docker-compose up -d --scale spark-worker=3
+  #   để chạy 3 workers cùng lúc
+  #
+  # TUNING:
+  #   - SPARK_WORKER_MEMORY: tăng nếu jobs bị OOM
+  #   - SPARK_WORKER_CORES: dựa trên số CPU cores của host
+  spark-worker:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: spark-worker
+    command: >
+      /opt/spark/bin/spark-class
+      org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    volumes:
+      - ./:/opt/spark/app
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      # Resource limits cho mỗi worker
+      SPARK_WORKER_MEMORY: 2G      # Tăng nếu cần xử lý data lớn
+      SPARK_WORKER_CORES: 2        # Số cores mỗi worker có thể dùng
+
+  # ────────────────────────────────────────────────────────────
+  # SPARK STREAMING JOB: Weather → Bronze Layer
+  # ────────────────────────────────────────────────────────────
+  # Đọc weather events từ Kafka và ghi vào Delta Lake bronze layer
+  #
+  # DATA FLOW:
+  #   Kafka (nyc_weather) → Spark Streaming → MinIO (s3a://bronze/weather/)
+  #
+  # CHECKPOINT: s3a://bronze/checkpoints/weather
+  #   - Lưu state để recover sau khi crash
+  #   - KHÔNG XÓA checkpoint khi job đang chạy
+  #
+  # MONITORING:
+  #   - Check Spark UI (localhost:8080) cho application status
+  #   - Check container logs: docker-compose logs -f spark-weather-bronze
+  #
+  # RESTART POLICY: on-failure
+  #   - Tự động restart nếu job crash
+  #   - Giới hạn: default 10 times
+  spark-weather-bronze:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: spark-weather-bronze
+    depends_on:
+      spark-master:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    volumes:
+      - ./:/opt/spark/app
+    command: >
+      /opt/spark/bin/spark-submit
+        --master spark://spark-master:7077
+        --deploy-mode client
+        --driver-memory 512m         # Memory cho driver process
+        --executor-memory 1g         # Memory cho mỗi executor
+        --executor-cores 1           # Cores cho mỗi executor
+        /opt/spark/app/spark/jobs/weather_kafka_to_bronze.py
+    # Tự động restart nếu fail (do network, Kafka unavailable, etc.)
+    restart: on-failure
+
+  # ────────────────────────────────────────────────────────────
+  # SPARK STREAMING JOB: Taxi Events → Bronze Layer
+  # ────────────────────────────────────────────────────────────
+  # Đọc taxi events (request + response) từ Kafka → Delta Lake bronze
+  #
+  # DATA FLOW:
+  #   Kafka (nyc_taxi_events) → Spark Streaming → MinIO (s3a://bronze/taxi_events/)
+  #
+  # PARTITIONING:
+  #   - Partition by year/month/event_type
+  #   - Giúp query nhanh hơn ở Silver layer
+  #
+  # PERFORMANCE:
+  #   - maxOffsetsPerTrigger: 50000 (giới hạn messages mỗi batch)
+  #   - processingTime: 10 seconds (micro-batch interval)
+  #   - Tăng executor-cores=2 vì taxi events có throughput cao hơn weather
+  spark-taxi-bronze:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: spark-taxi-bronze
+    depends_on:
+      spark-master:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    volumes:
+      - ./:/opt/spark/app
+    command: >
+      /opt/spark/bin/spark-submit
+        --master spark://spark-master:7077
+        --deploy-mode client
+        --driver-memory 512m
+        --executor-memory 1g
+        --executor-cores 2           # 2 cores vì data volume cao
+        /opt/spark/app/spark/jobs/taxi_kafka_to_bronze.py
+    restart: on-failure
+
+  # ────────────────────────────────────────────────────────────
+  # WEATHER PRODUCER - Simulates weather data streaming
+  # ────────────────────────────────────────────────────────────
+  # Đọc weather CSV và gửi vào Kafka theo thời gian thực giả lập
+  #
+  # TIME COMPRESSION:
+  #   1 giờ event time = 1 giây realtime (SPEED_FACTOR = 3600)
+  #   → 1 năm data = ~2.4 giờ streaming
+  #
+  # DATA SOURCE: /datasets/weather_full.csv
+  #
+  # TROUBLESHOOTING:
+  #   - Nếu producer crash: check xem Kafka topics đã được tạo chưa
+  #   - Nếu data lag: giảm SPEED_FACTOR hoặc tăng Kafka retention
   weather-producer:
     build: ./producer/weather
     container_name: weather-producer
     depends_on:
-      - kafka
+      kafka-setup:
+        condition: service_completed_successfully
+    volumes:
+      # Mount dataset directory
+      - ./datasets:/datasets
+    environment:
+      # Kafka bootstrap servers (internal Docker network)
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    restart: on-failure
+
+  # ────────────────────────────────────────────────────────────
+  # REQUEST PRODUCER - Simulates taxi booking requests
+  # ────────────────────────────────────────────────────────────
+  # Gửi taxi request events (event_type=request) vào Kafka
+  #
+  # DATA: Parquet files in /datasets/sorted_request_table/
+  # TIME: Compressed 3600x (1 hour = 1 second)
+  #
+  # SCHEMA:
+  #   - trip_id (used as Kafka message key)
+  #   - request_datetime
+  #   - pu_location_id, do_location_id
+  #   - trip_miles, trip_time
+  #   - fare, tips, tolls
+  request-producer:
+    build: ./producer/request
+    container_name: request-producer
+    depends_on:
+      kafka-setup:
+        condition: service_completed_successfully
     volumes:
       - ./datasets:/datasets
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    restart: on-failure
 
-  # ==================================================
-  # Spark Master
-  # ==================================================
-  # spark-master:
-  #   build: ./spark
-  #   container_name: spark-master
-  #   hostname: spark-master
-  #   command: >
-  #     /opt/bitnami/spark/bin/spark-class
-  #     org.apache.spark.deploy.master.Master
-  #   ports:
-  #     - "7077:7077"
-  #     - "8080:8080"
-  #   depends_on:
-  #     - kafka
-  #     - minio
+  # ────────────────────────────────────────────────────────────
+  # RESPONSE PRODUCER - Simulates taxi trip completions
+  # ────────────────────────────────────────────────────────────
+  # Gửi taxi response events (event_type=response) vào Kafka
+  #
+  # DATA: Parquet files in /datasets/sorted_response_table/
+  # 
+  # CORRELATION:
+  #   - Same trip_id as request
+  #   - Used for join operations in Silver layer
+  #   - Response comes after request in timeline
+  response-producer:
+    build: ./producer/response
+    container_name: response-producer
+    depends_on:
+      kafka-setup:
+        condition: service_completed_successfully
+    volumes:
+      - ./datasets:/datasets
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    restart: on-failure
 
-  # # ==================================================
-  # # Spark Worker 1
-  # # ==================================================
-  # spark-worker-1:
-  #   build: ./spark
-  #   container_name: spark-worker-1
-  #   command: >
-  #     /opt/bitnami/spark/bin/spark-class
-  #     org.apache.spark.deploy.worker.Worker
-  #     spark://spark-master:7077
-  #   depends_on:
-  #     - spark-master
-  #   ports:
-  #     - "8081:8081"
-
-  # # ==================================================
-  # # Spark Worker 2
-  # # ==================================================
-  # spark-worker-2:
-  #   build: ./spark
-  #   container_name: spark-worker-2
-  #   command: >
-  #     /opt/bitnami/spark/bin/spark-class
-  #     org.apache.spark.deploy.worker.Worker
-  #     spark://spark-master:7077
-  #   depends_on:
-  #     - spark-master
-  #   ports:
-  #     - "8082:8081"
-
+# ────────────────────────────────────────────────────────────
+# VOLUMES - Persistent storage
+# ────────────────────────────────────────────────────────────
 volumes:
+  # MinIO data persistence
+  # BACKUP: docker run --rm -v bigdata_minio_data:/data -v $(pwd):/backup alpine tar czf /backup/minio-backup.tar.gz /data
+  # RESTORE: docker run --rm -v bigdata_minio_data:/data -v $(pwd):/backup alpine tar xzf /backup/minio-backup.tar.gz -C /
   minio_data:
+
+# ============================================================
+# MAINTENANCE COMMANDS
+# ============================================================
+#
+# View logs của tất cả services:
+#   docker-compose logs -f
+#
+# View logs của 1 service cụ thể:
+#   docker-compose logs -f spark-master
+#
+# Restart một service:
+#   docker-compose restart spark-weather-bronze
+#
+# Scale workers:
+#   docker-compose up -d --scale spark-worker=3
+#
+# Check resource usage:
+#   docker stats
+#
+# Clean up everything (CAREFUL - deletes all data):
+#   docker-compose down -v
+#   docker system prune -a
+#
+# ============================================================
