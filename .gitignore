@@ -3,4 +3,5 @@
 /workspace.xml
 .venv
 .idea
+.idea/
 datasets
