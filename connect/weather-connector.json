@@ -1,0 +1,39 @@
+{
+  "name": "weather-to-minio",
+  "config": {
+    "connector.class": "io.confluent.connect.s3.S3SinkConnector",
+    "tasks.max": "1",
+    "topics": "nyc_weather",
+
+    "s3.region": "us-east-1",
+    "s3.bucket.name": "bronze",
+    "store.url": "http://minio:9000",
+    "s3.part.size": "5242880",
+    "s3.ssea.name": "",
+
+    "aws.access.key.id": "minioadmin",
+    "aws.secret.access.key": "minioadmin",
+
+    "topics.dir": "weather",
+
+    "flush.size": "500",
+    "rotate.interval.ms": "60000",
+    "rotate.schedule.interval.ms": "60000",
+
+    "storage.class": "io.confluent.connect.s3.storage.S3Storage",
+    "format.class": "io.confluent.connect.s3.format.json.JsonFormat",
+
+    "partitioner.class": "io.confluent.connect.storage.partitioner.TimeBasedPartitioner",
+    "path.format": "'year'=YYYY/'month'=MM/'day'=dd/'hour'=HH",
+    "partition.duration.ms": "3600000",
+    "timestamp.extractor": "RecordField",
+    "timestamp.field": "datetime",
+    "locale": "en_US",
+    "timezone": "UTC",
+
+    "schema.compatibility": "NONE",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter"
+  }
+}
