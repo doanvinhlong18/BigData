@@ -8,7 +8,7 @@ KAFKA_BOOTSTRAP_SERVERS = "kafka:9092"
 TOPIC = "nyc_taxi_events"
 
 # 1 hour event-time = 1 second realtime
-SPEED_FACTOR = 3600
+SPEED_FACTOR = 300
 
 START_EVENT_TIME = datetime(2025, 1, 1, 0, 0, 0)
 
