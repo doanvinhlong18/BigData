@@ -12,13 +12,14 @@ TOPIC = "nyc_weather"
 CSV_PATH = "../datasets/weather_full.csv"
 
 # 1 hour weather data = 1 second realtime
-SPEED_FACTOR = 3600
+SPEED_FACTOR = 300
 
 
 def to_int(value, default=None):
     try:
         if value is None or str(value).strip().lower() in ("", "null"):
             return default
+            
         return int(float(value))
     except:
         return default
