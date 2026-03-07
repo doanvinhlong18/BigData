@@ -19,9 +19,9 @@ submit_weather() {
         --master spark://spark-master:7077 \
         --deploy-mode client \
         --driver-memory 512m \
-        --executor-memory 2g \
-        --executor-cores 2 \
-        --total-executor-cores 2 \
+        --executor-memory 1g \
+        --executor-cores 1 \
+        --total-executor-cores 1 \
         /opt/spark/app/spark/jobs/weather_kafka_to_bronze.py &
     echo "[SUBMIT] Weather job submitted (PID: $!)"
 }
@@ -33,9 +33,9 @@ submit_taxi() {
         --master spark://spark-master:7077 \
         --deploy-mode client \
         --driver-memory 1g \
-        --executor-memory 4g \
-        --executor-cores 4 \
-        --total-executor-cores 4 \
+        --executor-memory 1g \
+        --executor-cores 1 \
+        --total-executor-cores 1 \
         /opt/spark/app/spark/jobs/taxi_kafka_to_bronze.py &
     echo "[SUBMIT] Taxi job submitted (PID: $!)"
 }
