@@ -53,7 +53,7 @@ docker exec $CONTAINER \
   --master $MASTER \
   --deploy-mode client \
   --executor-memory 1G \
-  --executor-cores $EXECUTOR_CORES\
+  --executor-cores $EXECUTOR_CORES \
   --total-executor-cores  $EXECUTOR_CORES \
   --driver-memory $DRIVER_MEM \
   --conf "spark.sql.streaming.stateStore.providerClass=org.apache.spark.sql.execution.streaming.state.HDFSBackedStateStoreProvider" \
