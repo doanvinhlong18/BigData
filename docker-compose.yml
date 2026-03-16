@@ -179,15 +179,15 @@ services:
     command: >
       /opt/spark/bin/spark-class
       org.apache.spark.deploy.worker.Worker
-      spark://spark-master:7077
-    depends_on:
-      spark-master:
-        condition: service_healthy
+      spark://172.20.10.2:7077
+    # depends_on:
+    #   spark-master:
+    #     condition: service_healthy
     volumes:
       - ./:/opt/spark/app
     environment:
       SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_MASTER_URL: spark://172.20.10.2:7077
       SPARK_WORKER_MEMORY: 6G
       SPARK_WORKER_CORES: 6
       HADOOP_USER_NAME: root
