@@ -1,61 +1,40 @@
-import duckdb
-import glob
+# ...existing code...
 import os
-import time
+import shutil
+from pathlib import Path
+import duckdb
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+src_path = r"c:\D\nam4_ki2\BigData\datasets\fvhfv\2022"
+tmp_path = r"c:\D\nam4_ki2\BigData\datasets\fvhfv\2022__tmp_duckdb_cast"
+out_file = os.path.join(tmp_path, "data.parquet")
 
-# INPUT_FOLDER = os.path.join(BASE_DIR, "request_table", "*.parquet")
-# OUTPUT_FOLDER = os.path.join(BASE_DIR, "sorted_request_table")
+if os.path.exists(tmp_path):
+    shutil.rmtree(tmp_path)
+os.makedirs(tmp_path, exist_ok=True)
 
-INPUT_FOLDER = os.path.join(BASE_DIR, "datasets/request_table", "*.parquet")
-OUTPUT_FOLDER = os.path.join(BASE_DIR, "datasets/sorted_request_table")
+con = duckdb.connect()
 
+glob_path = (Path(src_path).as_posix() + "/**/*.parquet").replace("'", "''")
+out_file_sql = Path(out_file).as_posix().replace("'", "''")
 
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+sql = f"""
+CREATE OR REPLACE TEMP VIEW v2022 AS
+SELECT
+  * REPLACE (
+    TRY_CAST(PULocationID AS INTEGER) AS PULocationID,
+    TRY_CAST(DOLocationID AS INTEGER) AS DOLocationID
+  )
+FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=true);
 
-files = sorted(glob.glob(INPUT_FOLDER))
+COPY (SELECT * FROM v2022)
+TO '{out_file_sql}' (FORMAT PARQUET, COMPRESSION ZSTD);
+"""
+con.execute(sql)
+con.close()
 
-print("🔍 Searching parquet in:", INPUT_FOLDER)
+if os.path.exists(src_path):
+    shutil.rmtree(src_path)
+os.replace(tmp_path, src_path)
 
-if not files:
-    raise FileNotFoundError(f"❌ No parquet files found at: {INPUT_FOLDER}")
-
-print(f"📦 Found {len(files)} parquet files")
-
-total_start = time.time()
-
-for i, f in enumerate(files, 1):
-    filename = os.path.basename(f)
-    output_file = os.path.join(OUTPUT_FOLDER, filename)
-
-    print(f"\n🚀 [{i}/{len(files)}] Sorting: {filename}")
-    start = time.time()
-
-    duckdb.sql(
-        f"""
-    COPY (
-        SELECT *
-        FROM read_parquet('{f}')
-        ORDER BY request_datetime ASC
-    )
-    TO '{output_file}';
-    """
-    )
-
-    # duckdb.sql(
-    #     f"""
-    # COPY (
-    #     SELECT *
-    #     FROM read_parquet('{f}')
-    #     ORDER BY dropoff_datetime ASC
-    # )
-    # TO '{output_file}';
-    # """
-    # )
-
-    elapsed = time.time() - start
-    print(f"✅ Saved: {output_file} ({elapsed:.2f}s)")
-
-total_elapsed = time.time() - total_start
-print(f"\n🎉 All files sorted successfully in {total_elapsed:.2f} seconds")
+print("✅ Done: cast PULocationID, DOLocationID -> INTEGER và đã lưu đè folder 2022")
+# ...existing code...
