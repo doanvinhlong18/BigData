@@ -4,3 +4,4 @@
 .venv
 .idea
 datasets
+train_data
