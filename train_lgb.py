@@ -29,7 +29,7 @@ from sklearn.metrics import classification_report
 PARQUET_PATH = r"C:\D\nam4_ki2\BigData\datasets\train_data"  # folder chứa file .parquet
 OUTPUT_DIR = r"C:\D\nam4_ki2\BigData\datasets\lgb_output"  # thư mục lưu kết quả
 LABEL_COL = "label_7class"
-DROP_COLS = {"window_end", "label", "month", "label_7class"}
+DROP_COLS = {"window_end", "label_7class"}
 VALID_RATIO = 0.20  # 80% train / 20% valid theo thứ tự thời gian
 BATCH_SIZE = 2_000_000  # rows/batch khi stream, giảm nếu OOM
 RANDOM_SEED = 43
