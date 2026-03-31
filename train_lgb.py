@@ -30,9 +30,9 @@ PARQUET_PATH = r"C:\D\nam4_ki2\BigData\datasets\train_data"  # folder chứa fil
 OUTPUT_DIR = r"C:\D\nam4_ki2\BigData\datasets\lgb_output"  # thư mục lưu kết quả
 LABEL_COL = "label_7class"
 DROP_COLS = {"window_end", "label_7class"}
-VALID_RATIO = 0.20  # 80% train / 20% valid theo thứ tự thời gian
+VALID_RATIO = 0.10  # 80% train / 20% valid theo thứ tự thời gian
 BATCH_SIZE = 2_000_000  # rows/batch khi stream, giảm nếu OOM
-RANDOM_SEED = 43
+RANDOM_SEED = 42
 N_CLASS = 6  # số class thực tế trong label
 
 # ==============================================================
@@ -47,21 +47,22 @@ PARAMS = {
     # Nếu báo lỗi CUDA thì đổi "cuda" → "cpu" và bỏ dòng num_gpu
     "device": "cpu",
     # Tree — num_leaves=255 cho data lớn nhiều feature
-    "num_leaves": 255,
+    "num_leaves": 511,
     "max_depth": -1,
-    "min_child_samples": 200,  # cao hơn vì full 26M rows
+    "min_child_samples": 50,  # cao hơn vì full 26M rows
     # Sampling — giảm overfit, tăng tốc
-    "feature_fraction": 0.8,
-    "bagging_fraction": 0.8,
+    "feature_fraction": 0.9,
+    "bagging_fraction": 0.9,
     "bagging_freq": 1,
     # Regularization
-    "reg_alpha": 0.1,
-    "reg_lambda": 1.0,
-    "min_split_gain": 0.01,
+    "reg_alpha": 0.2,
+    "reg_lambda": 2.0,
+    "min_split_gain": 0.0,
     # Histogram — max_bin=63 tiết kiệm RAM, đủ cho 26M rows
-    "max_bin": 63,
+    "max_bin": 255,
     # Learning
-    "learning_rate": 0.07,
+    "learning_rate": 0.1,
+    "is_unbalance": True,  # tự động scale weight theo class imbalance
     # System
     "n_jobs": -1,  # dùng hết core CPU
     "verbose": -1,
@@ -110,7 +111,7 @@ def main():
     t0 = time.time()
     out = Path(OUTPUT_DIR)
     out.mkdir(parents=True, exist_ok=True)
-    ckpt_path = out / "lgb_checkpoint1.txt"
+    ckpt_path = out / "lgb_checkpoint.txt"
 
     # ----------------------------------------------------------
     # 1. Đọc schema
@@ -195,17 +196,17 @@ def main():
     # ----------------------------------------------------------
     # 4. Class weights — imbalanced
     # ----------------------------------------------------------
-    print("\n" + "=" * 55)
-    print("STEP 4 — Class weights")
-    print("=" * 55)
-    classes = np.unique(y_tr)
-    weights = compute_class_weight("balanced", classes=classes, y=y_tr)
-    w_map = dict(zip(classes.tolist(), weights.tolist()))
-    for k, v in w_map.items():
-        print(f"  class {k}: {v:.3f}")
+    # print("\n" + "=" * 55)
+    # print("STEP 4 — Class weights")
+    # print("=" * 55)
+    # classes = np.unique(y_tr)
+    # weights = compute_class_weight("balanced", classes=classes, y=y_tr)
+    # w_map = dict(zip(classes.tolist(), weights.tolist()))
+    # for k, v in w_map.items():
+    #     print(f"  class {k}: {v:.3f}")
 
-    sw_tr = np.array([w_map[c] for c in y_tr], dtype="float32")
-    sw_val = np.array([w_map[c] for c in y_val], dtype="float32")
+    # sw_tr = np.array([w_map[c] for c in y_tr], dtype="float32")
+    # sw_val = np.array([w_map[c] for c in y_val], dtype="float32")
 
     # ----------------------------------------------------------
     # 5. Build LGB Dataset — construct() ngay để free numpy
@@ -277,7 +278,7 @@ def main():
     print("\n" + "=" * 55)
     print("STEP 7 — Lưu model")
     print("=" * 55)
-    model_path = out / "lgb_final_model1.txt"
+    model_path = out / "lgb_final_model.txt"
     model.save_model(str(model_path))
     print(f"  Model saved: {model_path}")
 
