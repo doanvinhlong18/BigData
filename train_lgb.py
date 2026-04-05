@@ -29,7 +29,26 @@ from sklearn.metrics import classification_report
 PARQUET_PATH = r"C:\D\nam4_ki2\BigData\datasets\train_data"  # folder chứa file .parquet
 OUTPUT_DIR = r"C:\D\nam4_ki2\BigData\datasets\lgb_output"  # thư mục lưu kết quả
 LABEL_COL = "label_7class"
-DROP_COLS = {"window_end", "label_7class"}
+DROP_COLS = {
+    "window_end",
+    "label_7class",
+    "requests_30m_lag144",
+    "requests_30m_lag1005",
+    "requests_30m_lag1008",
+    "requests_30m_lag141",
+    "pickup_30m_lag144",
+    "pickup_30m_lag1005",
+    "pickup_30m_lag1008",
+    "pickup_30m_lag141",
+    "dropoff_30m_lag144",
+    "dropoff_30m_lag1005",
+    "dropoff_30m_lag1008",
+    "dropoff_30m_lag141",
+    "pickup_delay_mean_lag144",
+    "pickup_delay_mean_lag1005",
+    "pickup_delay_mean_lag1008",
+    "pickup_delay_mean_lag141",
+}
 VALID_RATIO = 0.10  # 80% train / 20% valid theo thứ tự thời gian
 BATCH_SIZE = 2_000_000  # rows/batch khi stream, giảm nếu OOM
 RANDOM_SEED = 42
@@ -61,7 +80,7 @@ PARAMS = {
     # Histogram — max_bin=63 tiết kiệm RAM, đủ cho 26M rows
     "max_bin": 255,
     # Learning
-    "learning_rate": 0.1,
+    "learning_rate": 0.05,
     "is_unbalance": True,  # tự động scale weight theo class imbalance
     # System
     "n_jobs": -1,  # dùng hết core CPU
@@ -220,13 +239,12 @@ def main():
     dtrain = lgb.Dataset(
         X_tr,
         label=y_tr,
-        weight=sw_tr,
         feature_name=feat_cols,
         free_raw_data=True,
         params={"max_bin": PARAMS["max_bin"]},
     )
     dtrain.construct()
-    del X_tr, y_tr, sw_tr
+    del X_tr, y_tr
     gc.collect()
     ram("after dtrain")
 
@@ -234,14 +252,13 @@ def main():
     dvalid = lgb.Dataset(
         X_val,
         label=y_val,
-        weight=sw_val,
         reference=dtrain,
         feature_name=feat_cols,
         free_raw_data=True,
         params={"max_bin": PARAMS["max_bin"]},
     )
     dvalid.construct()
-    del X_val, y_val, sw_val
+    del X_val, y_val
     gc.collect()
     ram(f"after dvalid — ready to train  ({elapsed(t2)})")
 
