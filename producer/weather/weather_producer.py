@@ -19,7 +19,7 @@ def to_int(value, default=None):
     try:
         if value is None or str(value).strip().lower() in ("", "null"):
             return default
-            
+
         return int(float(value))
     except:
         return default
@@ -85,8 +85,8 @@ def main():
                 "cloud_cover": to_float(row["cloud_cover"]),
                 "relative_humidity_2m": to_float(row["relative_humidity_2m"]),
                 "surface_pressure": to_float(row["surface_pressure"]),
-                "wind_speed_10m": to_float(row["wind_speed_10m"]),
-                "wind_gusts_10m": to_float(row["wind_gusts_10m"]),
+                "wind_speed_15m": to_float(row["wind_speed_15m"]),
+                "wind_gusts_15m": to_float(row["wind_gusts_15m"]),
                 "soil_temperature_0_to_7cm": to_float(row["soil_temperature_0_to_7cm"]),
                 "weather_code": to_int(row["weather_code"]),
             }
