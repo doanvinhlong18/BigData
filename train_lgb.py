@@ -28,8 +28,8 @@ from sklearn.metrics import classification_report
 # ==============================================================
 PARQUET_PATH = r"C:\D\nam4_ki2\BigData\datasets\train_data"  # folder chứa file .parquet
 OUTPUT_DIR = r"C:\D\nam4_ki2\BigData\datasets\lgb_output"  # thư mục lưu kết quả
-LABEL_COL = "label_7class"
-DROP_COLS = {"window_end", "label_7class"}
+LABEL_COL = "label_6class"
+DROP_COLS = {"window_end", "label_6class"}
 VALID_RATIO = 0.10  # 80% train / 20% valid theo thứ tự thời gian
 BATCH_SIZE = 2_000_000  # rows/batch khi stream, giảm nếu OOM
 RANDOM_SEED = 42
@@ -47,7 +47,7 @@ PARAMS = {
     # Nếu báo lỗi CUDA thì đổi "cuda" → "cpu" và bỏ dòng num_gpu
     "device": "cpu",
     # Tree — num_leaves=255 cho data lớn nhiều feature
-    "num_leaves": 511,
+    "num_leaves": 255,
     "max_depth": -1,
     "min_child_samples": 50,  # cao hơn vì full 26M rows
     # Sampling — giảm overfit, tăng tốc
@@ -55,21 +55,20 @@ PARAMS = {
     "bagging_fraction": 0.9,
     "bagging_freq": 1,
     # Regularization
-    "reg_alpha": 0.2,
-    "reg_lambda": 2.0,
-    "min_split_gain": 0.0,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+    "min_split_gain": 0.001,
     # Histogram — max_bin=63 tiết kiệm RAM, đủ cho 26M rows
     "max_bin": 255,
     # Learning
-    "learning_rate": 0.1,
-    "is_unbalance": True,  # tự động scale weight theo class imbalance
+    "learning_rate": 0.05,
     # System
     "n_jobs": -1,  # dùng hết core CPU
     "verbose": -1,
     "seed": RANDOM_SEED,
 }
 
-NUM_BOOST_ROUND = 1200
+NUM_BOOST_ROUND = 600
 EARLY_STOP = 50
 LOG_EVERY = 50
 CKPT_EVERY = 200  # lưu checkpoint mỗi N rounds
@@ -196,17 +195,17 @@ def main():
     # ----------------------------------------------------------
     # 4. Class weights — imbalanced
     # ----------------------------------------------------------
-    # print("\n" + "=" * 55)
-    # print("STEP 4 — Class weights")
-    # print("=" * 55)
-    # classes = np.unique(y_tr)
-    # weights = compute_class_weight("balanced", classes=classes, y=y_tr)
-    # w_map = dict(zip(classes.tolist(), weights.tolist()))
-    # for k, v in w_map.items():
-    #     print(f"  class {k}: {v:.3f}")
+    print("\n" + "=" * 55)
+    print("STEP 4 — Class weights")
+    print("=" * 55)
+    classes = np.unique(y_tr)
+    weights = compute_class_weight("balanced", classes=classes, y=y_tr)
+    w_map = dict(zip(classes.tolist(), weights.tolist()))
+    for k, v in w_map.items():
+        print(f"  class {k}: {v:.3f}")
 
-    # sw_tr = np.array([w_map[c] for c in y_tr], dtype="float32")
-    # sw_val = np.array([w_map[c] for c in y_val], dtype="float32")
+    sw_tr = np.array([w_map[c] for c in y_tr], dtype="float32")
+    sw_val = np.array([w_map[c] for c in y_val], dtype="float32")
 
     # ----------------------------------------------------------
     # 5. Build LGB Dataset — construct() ngay để free numpy
@@ -220,8 +219,8 @@ def main():
     dtrain = lgb.Dataset(
         X_tr,
         label=y_tr,
-        weight=sw_tr,
         feature_name=feat_cols,
+        weight=sw_tr,
         free_raw_data=True,
         params={"max_bin": PARAMS["max_bin"]},
     )
@@ -234,9 +233,9 @@ def main():
     dvalid = lgb.Dataset(
         X_val,
         label=y_val,
-        weight=sw_val,
         reference=dtrain,
         feature_name=feat_cols,
+        weight=sw_val,
         free_raw_data=True,
         params={"max_bin": PARAMS["max_bin"]},
     )

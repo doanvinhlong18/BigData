@@ -59,7 +59,7 @@ spark = (
     .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
     .config("spark.hadoop.fs.s3a.fast.upload", "true")
     .config("spark.hadoop.fs.s3a.fast.upload.buffer", "bytebuffer")
-    .config("spark.hadoop.fs.s3a.multipart.size", "10m")
+    .config("spark.hadoop.fs.s3a.multipart.size", "15m")
     .config("spark.hadoop.fs.s3a.block.size", "32M")
     .config("spark.hadoop.fs.s3a.connection.maximum", "100")
     .config("spark.hadoop.fs.s3a.threads.max", "20")
