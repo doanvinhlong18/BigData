@@ -1,4 +1,0 @@
-FROM confluentinc/cp-kafka-connect:7.5.0
-
-# Cài S3 Sink Connector (hỗ trợ MinIO qua path-style access)
-RUN confluent-hub install --no-prompt confluentinc/kafka-connect-s3:10.5.4
