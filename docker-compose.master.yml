@@ -1,0 +1,366 @@
+version: "3.8"
+
+# ================================================================
+# docker-compose.master.yml — Machine 1 (Master)
+# Không dùng PostgreSQL — Airflow/MLflow/Grafana đều dùng SQLite
+# ================================================================
+
+x-spark-base: &spark-base
+  image: bigdata-spark:latest
+  build:
+    context: ./spark
+    dockerfile: Dockerfile
+
+x-minio-env: &minio-env
+  AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+  MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT}
+
+services:
+
+  # ── ZOOKEEPER ────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: echo ruok | nc localhost 2181 | grep imok
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── KAFKA ─────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://${MASTER_IP}:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 48
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms512M"
+      KAFKA_NUM_NETWORK_THREADS: 4
+      KAFKA_NUM_IO_THREADS: 6
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: kafka-broker-api-versions --bootstrap-server localhost:9092
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+
+  # ── KAFKA SETUP ───────────────────────────────────────────────
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      kafka-topics --create --if-not-exists \
+        --bootstrap-server kafka:9092 \
+        --topic nyc_taxi_events \
+        --partitions 3 \
+        --replication-factor 1 \
+        --config retention.ms=172800000
+      echo 'Topics OK'
+      kafka-topics --list --bootstrap-server kafka:9092
+      "
+    restart: on-failure
+
+  # ── MINIO ─────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      MINIO_API_REQUESTS_MAX: 600
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: curl -f http://localhost:9000/minio/health/live
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── MINIO SETUP ───────────────────────────────────────────────
+  minio-setup:
+    image: minio/mc:latest
+    container_name: minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+      mc mb -p local/bronze
+      mc mb -p local/silver
+      mc mb -p local/gold
+      mc mb -p local/mlflow-artifacts
+      echo 'Buckets OK'
+      "
+    restart: on-failure
+
+  # ── LOAD WEATHER — chạy 1 lần trước khi Spark jobs start ─────────────────
+  # Đọc 2526.csv → ghi vào silver/weather (Delta)
+  # silver_to_gold.py JOIN từ đây theo (zone_id, window_end)
+  load-weather-setup:
+    image: bigdata-spark:latest
+    container_name: load-weather-setup
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+    command: >
+      spark-submit
+        --master local[2]
+        --conf spark.hadoop.fs.s3a.endpoint=${MINIO_ENDPOINT}
+        --conf spark.hadoop.fs.s3a.access.key=${MINIO_ACCESS_KEY}
+        --conf spark.hadoop.fs.s3a.secret.key=${MINIO_SECRET_KEY}
+        /opt/spark/app/scripts/load_weather_to_silver.py
+    environment:
+      MINIO_ENDPOINT:    ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY:  ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY:  ${MINIO_SECRET_KEY}
+      WEATHER_CSV_PATH:  ${WEATHER_CSV_PATH}
+      SILVER_WEATHER:    s3a://silver/weather
+    volumes:
+      - ./scripts:/opt/spark/app/scripts
+      - ${DATASET_PATH}:/datasets:ro
+    restart: "no"   # chỉ chạy 1 lần
+
+  # ── SPARK MASTER ──────────────────────────────────────────────
+  spark-master:
+    <<: *spark-base
+    container_name: spark-master
+    restart: unless-stopped
+    command: spark-class org.apache.spark.deploy.master.Master
+    environment:
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+      SPARK_DAEMON_MEMORY: 1g
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    volumes:
+      - ./spark/jobs:/opt/spark/app/spark/jobs
+      - ./scripts:/opt/spark/app/scripts
+      - ${DATASET_PATH}:/datasets:ro
+    healthcheck:
+      test: curl -f http://localhost:8080
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── AIRFLOW — SQLite backend ───────────────────────────────────
+  airflow:
+    image: apache/airflow:2.8.0-python3.11
+    container_name: airflow
+    restart: unless-stopped
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
+      AIRFLOW__CORE__PARALLELISM: 4
+      AIRFLOW__SCHEDULER__MAX_THREADS: 2
+      # Biến cho DAGs
+      MASTER_IP: ${MASTER_IP}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT_EXTERNAL}
+      WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
+      SILVER_WEATHER: s3a://silver/weather
+      SILVER_COMPLETE: s3a://silver/complete
+      GOLD_AGGREGATED: s3a://gold/aggregated
+      GOLD_PRED_PATH: s3a://gold/predictions_monitoring
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MLFLOW_TRACKING_URI: http://${MASTER_IP}:5000
+      SPARK_MASTER_URL: ${SPARK_MASTER_URL}
+      WEATHER_API_URL: https://api.open-meteo.com/v1/forecast
+      <<: *minio-env
+    ports:
+      - "8888:8080"
+    volumes:
+      - airflow-data:/opt/airflow
+      - ./airflow/dags:/opt/airflow/dags
+      - ./ml:/opt/airflow/ml
+      - ./spark/jobs:/opt/airflow/spark_jobs
+    command: >
+      bash -c "
+        pip install --quiet deltalake lightgbm scikit-learn pandas pyarrow requests mlflow boto3 &&
+        airflow db migrate &&
+        airflow users create --username admin --password admin
+          --firstname Admin --lastname Admin
+          --role Admin --email admin@bigdata.com 2>/dev/null || true &&
+        airflow webserver &
+        airflow scheduler
+      "
+    healthcheck:
+      test: curl -f http://localhost:8080/health
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # ── MLFLOW — SQLite backend ────────────────────────────────────
+  mlflow:
+    image: python:3.11-slim
+    container_name: mlflow
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *minio-env
+    command: >
+      bash -c "
+        pip install --quiet mlflow boto3 &&
+        mlflow server
+          --backend-store-uri sqlite:////mlflow/mlflow.db
+          --default-artifact-root s3://mlflow-artifacts/
+          --host 0.0.0.0
+          --port 5000
+      "
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow
+    healthcheck:
+      test: curl -f http://localhost:5000/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── METRICS API (FastAPI — cho Grafana đọc Delta tables) ─────
+  metrics-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: metrics-api
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "minio:127.0.0.1"   # resolve minio hostname trong cùng network
+    healthcheck:
+      test: curl -f http://localhost:8000/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── GRAFANA — SQLite built-in + Infinity plugin ────────────────
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      metrics-api:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Cài Infinity plugin khi start
+      GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource
+      # Cho phép load dashboard từ file JSON
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/demand_forecast.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+
+  # ── PRODUCERS ─────────────────────────────────────────────────
+  request-producer:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    container_name: request-producer
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: python unified_producer.py request
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPEED_FACTOR: ${SPEED_FACTOR}
+      DATASET_PATH: /datasets
+    volumes:
+      - ${DATASET_PATH}:/datasets:ro
+
+  response-producer:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    container_name: response-producer
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: python unified_producer.py response
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPEED_FACTOR: ${SPEED_FACTOR}
+      DATASET_PATH: /datasets
+    volumes:
+      - ${DATASET_PATH}:/datasets:ro
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  minio-data:
+  airflow-data:
+  mlflow-data:
+  grafana-data:
+
+networks:
+  default:
+    name: bigdata-net
+    driver: bridge
