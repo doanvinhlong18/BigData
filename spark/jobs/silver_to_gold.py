@@ -32,8 +32,9 @@ log = logging.getLogger("silver_to_gold")
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
 MINIO_ACCESS = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+SILVER_REQUEST = os.getenv("SILVER_REQUEST", "s3a://silver/request")
 SILVER_COMPLETE = os.getenv("SILVER_COMPLETE", "s3a://silver/complete")
-SILVER_WEATHER = os.getenv("SILVER_WEATHER", "s3a://silver/weather")
+# Weather không lưu vào Gold — join trong Airflow từ CSV khi predict/retrain
 GOLD_AGGREGATED = os.getenv("GOLD_AGGREGATED", "s3a://gold/aggregated")
 CHECKPOINT_DIR = os.getenv("CHECKPOINT_DIR", "s3a://checkpoints/silver_to_gold")
 
@@ -378,6 +379,47 @@ def build_gold_for_windows(spark, window_ends):
     max_we = max(window_ends)
     read_from = min_we - timedelta(seconds=WINDOW_SECONDS + 1800)
 
+    # ── Demand: đọc silver/REQUEST ─────────────────────────────────────────────
+    # Lý do: requests_60m phải đếm TẤT CẢ request trong window,
+    # kể cả trips đang chờ xe hoặc đang đi (chưa dropoff, chưa có trong complete).
+    # silver/complete chỉ có trips đã hoàn thành → bỏ sót nhu cầu thực đang xảy ra.
+    all_requests = (
+        spark.read.format("delta")
+        .load(SILVER_REQUEST)
+        .filter(F.col("request_datetime") >= F.lit(read_from))
+    )
+
+    SLIDE_EXPR = F.expr(f"INTERVAL {SLIDE_SECONDS} SECONDS")
+
+    def in_range(df):
+        return df.filter(
+            (F.col("zone_id") <= 263)
+            & (F.col("window_end") >= F.lit(min_we))
+            & (F.col("window_end") <= F.lit(max_we))
+        )
+
+    demand = in_range(
+        all_requests.withColumn("zone_id", F.col("PULocationID").cast("int"))
+        .withColumn("w", sliding("request_datetime"))
+        .groupBy("zone_id", "w")
+        .agg(
+            F.count("*").alias("requests_60m"),
+            F.sum(
+                F.when(
+                    F.col("request_datetime") >= F.col("w.end") - SLIDE_EXPR, 1
+                ).otherwise(0)
+            ).alias("requests_15m"),
+            F.sum(flag("wav_request_flag")).alias("wav_req"),
+            F.sum(flag("access_a_ride_flag")).alias("aar_req"),
+            F.sum(flag("shared_request_flag")).alias("share_req"),
+            F.sum(is_uber()).alias("uber_req"),
+        )
+        .withColumn("window_end", F.col("w.end"))
+        .drop("w")
+    )
+
+    # ── Pickup / Dropoff / Stats: đọc silver/COMPLETE ─────────────────────────
+    # Cần pickup_datetime và financials — chỉ có sau khi join request + response.
     raw = (
         spark.read.format("delta")
         .load(SILVER_COMPLETE)
@@ -402,35 +444,6 @@ def build_gold_for_windows(spark, window_ends):
         & F.col("trip_time").between(200, 20000)
         & F.col("base_passenger_fare").between(1, 1500)
         & F.col("driver_pay").between(1, 1500)
-    )
-
-    SLIDE_EXPR = F.expr(f"INTERVAL {SLIDE_SECONDS} SECONDS")
-
-    def in_range(df):
-        return df.filter(
-            (F.col("zone_id") <= 263)
-            & (F.col("window_end") >= F.lit(min_we))
-            & (F.col("window_end") <= F.lit(max_we))
-        )
-
-    demand = in_range(
-        trips.withColumn("zone_id", F.col("PULocationID").cast("int"))
-        .withColumn("w", sliding("request_datetime"))
-        .groupBy("zone_id", "w")
-        .agg(
-            F.count("*").alias("requests_60m"),
-            F.sum(
-                F.when(
-                    F.col("request_datetime") >= F.col("w.end") - SLIDE_EXPR, 1
-                ).otherwise(0)
-            ).alias("requests_15m"),
-            F.sum(flag("wav_request_flag")).alias("wav_req"),
-            F.sum(flag("access_a_ride_flag")).alias("aar_req"),
-            F.sum(flag("shared_request_flag")).alias("share_req"),
-            F.sum(is_uber()).alias("uber_req"),
-        )
-        .withColumn("window_end", F.col("w.end"))
-        .drop("w")
     )
 
     pickup = in_range(
@@ -554,36 +567,7 @@ def build_gold_for_windows(spark, window_ends):
     )
     gold = gold.join(nbr, ["zone_id", "window_end"], "left")
 
-    # ── Weather join từ silver/weather ────────────────────────────────────────
-    # Lý do join ở đây (không ở Airflow):
-    #   - Join xảy ra 1 lần khi window đóng, không lặp lại
-    #   - silver/weather đã được load từ 2526.csv (load_weather_to_silver.py)
-    #   - Predict DAG đọc Gold trực tiếp, có sẵn weather
-    #   - Lag weather (lag1..lag4) suy ra từ Gold history, không cần CSV lại
-    #   - Chỉ lead weather (T+15/30/45) cần đọc thêm 3 rows từ silver/weather
-    try:
-        weather = (
-            spark.read.format("delta")
-            .load(SILVER_WEATHER)
-            .select(
-                "zone_id",
-                "window_end",
-                "temperature_2m",
-                "relative_humidity_2m",
-                "surface_pressure",
-                "precipitation",
-                "rain",
-                "snowfall",
-                "cloud_cover",
-                "weather_code",
-                "wind_speed_10m",
-                "wind_gusts_10m",
-            )
-        )
-        gold = gold.join(weather, ["zone_id", "window_end"], "left")
-        log.info("Weather joined into Gold")
-    except Exception as e:
-        log.warning(f"silver/weather not available: {e} — weather cols = NULL")
+    # Weather không lưu vào Gold — join trong Airflow từ CSV khi predict/retrain
 
     # Partition
     gold = (

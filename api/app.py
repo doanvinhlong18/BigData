@@ -22,7 +22,7 @@ SCHEMA gold/predictions_monitoring (bảng gộp):
   used_model ("model_a" | "model_b_fallback")
   model_version, feature_schema_version, predicted_at
   shadow_predicted_class (nullable), shadow_proba_0..5 (nullable)
-  actual_imbalance (nullable), actual_label_class (nullable)
+  actual_label_class (nullable)
   is_correct (nullable), shadow_is_correct (nullable)
   evaluated_at (nullable)
 
@@ -82,6 +82,20 @@ def load_delta(path: str, filters: list = None):
 
     dt = DeltaTable(path, storage_options=STORAGE_OPTS)
     return dt.to_pandas(filters=filters) if filters else dt.to_pandas()
+
+
+def add_imbalance(df):
+    """
+    Tính imbalance tại chỗ từ pickup_delay_mean và requests_60m.
+    Gold không lưu imbalance — infer được từ 2 cột này nên không cần persist.
+    Formula phải khớp với compute_imbalance() trong feature_builder.py.
+    """
+    import numpy as np
+
+    if "pickup_delay_mean" in df.columns and "requests_60m" in df.columns:
+        delay = df["pickup_delay_mean"].fillna(0).clip(lower=0)
+        df["imbalance"] = (delay**1.2) * df["requests_60m"].fillna(0)
+    return df
 
 
 def ts_filters(col: str, hours: int):
@@ -197,7 +211,10 @@ def demand_latest():
         if df.empty:
             return {"data": [], "window_end": None, "n_zones": 0}
 
+        df = add_imbalance(df)  # tính tại chỗ — không lưu trong Gold
+
         # Chỉ lấy columns Grafana cần — tránh gửi ~107 cols qua HTTP
+        # Gold không lưu: weather, imbalance, temporal (tính tại chỗ khi cần)
         KEEP = [
             "zone_id",
             "window_end",
@@ -209,7 +226,7 @@ def demand_latest():
             "pickup_delay_std",
             "dropoff_60m",
             "matched_rp",
-            "imbalance",
+            "imbalance",  # tính tại chỗ từ add_imbalance()
             "avg_fare",
             "avg_driver_pay",
             "avg_trip_time",
@@ -217,10 +234,6 @@ def demand_latest():
             "neighbor_requests_60m",
             "neighbor_pickup_delay_mean",
             "num_neighbors",
-            "temperature_2m",
-            "weather_code",
-            "is_weekend",
-            "is_holiday",
         ]
         cols = [c for c in KEEP if c in df.columns]
         df = safe_ts(df[cols], "window_end")
@@ -247,6 +260,7 @@ def demand_history(
         if df.empty:
             return {"data": [], "hours": hours}
 
+        df = add_imbalance(df)  # tính tại chỗ — không lưu trong Gold
         df["window_end"] = df["window_end"].astype(str)
         agg = (
             df.groupby("window_end")
@@ -283,6 +297,7 @@ def demand_zone(
         if df.empty:
             return {"data": [], "zone_id": zone_id}
 
+        df = add_imbalance(df)  # tính tại chỗ — không lưu trong Gold
         KEEP = [
             "window_end",
             "requests_60m",
@@ -290,12 +305,10 @@ def demand_zone(
             "pickup_delay_mean",
             "pickup_15m",
             "dropoff_60m",
-            "imbalance",
+            "imbalance",  # tính tại chỗ từ add_imbalance()
             "avg_fare",
             "avg_distance",
             "neighbor_requests_60m",
-            "temperature_2m",
-            "weather_code",
         ]
         cols = [c for c in KEEP if c in df.columns]
         df = safe_ts(df[cols].sort_values("window_end"), "window_end")
@@ -389,64 +402,52 @@ def predictions_history(hours: int = Query(default=24, ge=1, le=168)):
             else evaluated["window_end"]
         )
 
-        # Group by giờ
         import pandas as pd
 
         evaluated["eval_hour"] = (
             pd.to_datetime(evaluated["window_end"]).dt.floor("h").astype(str)
         )
 
-        agg_cols = {
-            "overall_accuracy": ("is_correct", "mean"),
-            "n_evaluated": ("is_correct", "count"),
-            "model_a_accuracy": (
-                "is_correct",
-                lambda x: evaluated.loc[x.index][
-                    evaluated.loc[x.index, "used_model"] == "model_a"
-                ]["is_correct"].mean(),
-            ),
-            "model_b_accuracy": (
-                "is_correct",
-                lambda x: evaluated.loc[x.index][
-                    evaluated.loc[x.index, "used_model"] == "model_b_fallback"
-                ]["is_correct"].mean(),
-            ),
-        }
-
-        # Simpler groupby
-        grp = (
+        # Standard agg — tránh groupby.apply trả dict (fragile trên pandas mới)
+        base = (
             evaluated.groupby("eval_hour")
-            .apply(
-                lambda g: {
-                    "eval_hour": g["eval_hour"].iloc[0],
-                    "overall_accuracy": float(g["is_correct"].mean()),
-                    "n_evaluated": int(g["is_correct"].count()),
-                    "model_a_accuracy": (
-                        float(g[g["used_model"] == "model_a"]["is_correct"].mean())
-                        if (g["used_model"] == "model_a").any()
-                        else None
-                    ),
-                    "model_b_accuracy": (
-                        float(
-                            g[g["used_model"] == "model_b_fallback"][
-                                "is_correct"
-                            ].mean()
-                        )
-                        if (g["used_model"] == "model_b_fallback").any()
-                        else None
-                    ),
-                    "shadow_accuracy": (
-                        float(g["shadow_is_correct"].mean())
-                        if "shadow_is_correct" in g.columns
-                        and g["shadow_is_correct"].notna().any()
-                        else None
-                    ),
-                }
+            .agg(
+                overall_accuracy=("is_correct", "mean"),
+                n_evaluated=("is_correct", "count"),
             )
-            .tolist()
+            .reset_index()
         )
+        model_a = (
+            evaluated[evaluated["used_model"] == "model_a"]
+            .groupby("eval_hour")["is_correct"]
+            .mean()
+            .rename("model_a_accuracy")
+            .reset_index()
+        )
+        model_b = (
+            evaluated[evaluated["used_model"] == "model_b_fallback"]
+            .groupby("eval_hour")["is_correct"]
+            .mean()
+            .rename("model_b_accuracy")
+            .reset_index()
+        )
+        result = base.merge(model_a, on="eval_hour", how="left").merge(
+            model_b, on="eval_hour", how="left"
+        )
+        if "shadow_is_correct" in evaluated.columns:
+            shadow = (
+                evaluated[evaluated["shadow_is_correct"].notna()]
+                .groupby("eval_hour")["shadow_is_correct"]
+                .mean()
+                .rename("shadow_accuracy")
+                .reset_index()
+            )
+            result = result.merge(shadow, on="eval_hour", how="left")
+        else:
+            result["shadow_accuracy"] = None
 
-        return {"data": sorted(grp, key=lambda x: x["eval_hour"]), "hours": hours}
+        result = result.sort_values("eval_hour")
+        return {"data": result.fillna(0).to_dict(orient="records"), "hours": hours}
     except Exception as e:
         return {"error": str(e), "data": []}
 
@@ -624,18 +625,21 @@ def gold_schema():
             "grain": "(zone_id, window_end)",
             "window_type": "60-min sliding, 15-min slide",
             "n_zones": 263,
+            "note": "Weather không lưu trong Gold — merge từ CSV khi predict/retrain",
             "key_columns": [
                 "zone_id",
                 "window_end",
                 "requests_60m",
                 "requests_15m",
                 "pickup_delay_mean",
-                "imbalance",
+                "pickup_delay_std",
+                "pickup_60m",
+                "dropoff_60m",
+                "avg_fare",
+                "avg_distance",
                 "neighbor_requests_60m",
-                "temperature_2m",
-                "weather_code",
-                "is_weekend",
-                "is_holiday",
+                "neighbor_pickup_delay_mean",
+                "num_neighbors",
             ],
         },
         "gold_predictions_monitoring": {
@@ -650,7 +654,6 @@ def gold_schema():
                 "shadow_predicted_class (nullable)",
             ],
             "filled_at_evaluate": [
-                "actual_imbalance",
                 "actual_label_class",
                 "is_correct",
                 "shadow_is_correct",

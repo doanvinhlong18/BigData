@@ -24,8 +24,8 @@ Tính trong module này (không lưu trong Gold):
 
 Lag features (tính từ Gold history, no shuffle):
   7 main cols × lag[92, 668]
-  5 weather cols × lag[1,2,3,4] + lead[1,2,3]
-  lead1-3 weather: inject từ silver/weather (3 rows) vào trước khi predict
+  5 weather cols × lead[1,2,3] (notebook không có weather lags)
+  lead1-3 weather: inject từ CSV (3 rows) vào trước khi predict
 
 Quantile thresholds:
   Không hardcode, không lưu per-row — load từ MLflow params khi cần.
@@ -101,8 +101,21 @@ LAG_WEATHER_COLS = [
     "cloud_cover",
     "weather_code",
 ]
-WEATHER_LAG_STEPS = [1, 2, 3, 4]
+WEATHER_LAG_STEPS = []  # notebook không có weather lags — chỉ có leads
 WEATHER_LEAD_STEPS = [1, 2, 3]
+
+WEATHER_RAW_COLS = [
+    "temperature_2m",
+    "relative_humidity_2m",
+    "surface_pressure",
+    "precipitation",
+    "rain",
+    "snowfall",
+    "cloud_cover",
+    "weather_code",
+    "wind_speed_10m",
+    "wind_gusts_10m",
+]
 
 GOLD_RAW_FEATURES = [
     "requests_60m",
@@ -251,17 +264,28 @@ def _build_all_feature_columns() -> list:
 
 ALL_FEATURE_COLS = _build_all_feature_columns()
 
+# Features cho Model B (fallback) — bỏ toàn bộ weather cols
+_WEATHER_FEATURE_COLS_SET = set(
+    WEATHER_RAW_COLS
+    + [f"{c}_lag{s}" for c in LAG_WEATHER_COLS for s in WEATHER_LAG_STEPS]
+    + [f"{c}_lead{s}" for c in LAG_WEATHER_COLS for s in WEATHER_LEAD_STEPS]
+)
+NO_WEATHER_FEATURE_COLS = [
+    c for c in ALL_FEATURE_COLS if c not in _WEATHER_FEATURE_COLS_SET
+]
+
 
 class FeatureBuilder:
 
     @classmethod
     def build_inference_matrix(cls, gold_history_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Input:  7 ngày Gold history (đã có weather vì join ở streaming)
+        Input:  7 ngày Gold history đã được merge weather từ CSV bởi caller
+                (Gold không lưu weather — predict_dag merge trước khi gọi hàm này)
         Output: 263 rows × ALL_FEATURE_COLS
 
-        Weather lags tính tự động từ Gold history (Gold có weather per slot).
-        Weather leads (T+15/30/45) sẽ là NaN → cần gọi inject_weather_leads() sau.
+        Weather lags tính từ lịch sử trong df (sau khi caller merge weather vào).
+        Weather leads (T+15/30/45) vẫn là NaN → gọi inject_weather_leads() sau.
         """
         df = gold_history_df.copy()
         df["window_end"] = pd.to_datetime(df["window_end"])
@@ -363,9 +387,15 @@ class FeatureBuilder:
         return X, y, quantiles
 
     @classmethod
-    def get_feature_columns(cls):
+    def get_feature_columns(cls) -> list:
+        """Tất cả features — dùng cho Model A (có weather)."""
         return list(ALL_FEATURE_COLS)
 
     @classmethod
-    def get_schema_version(cls):
+    def get_no_weather_feature_columns(cls) -> list:
+        """Features không có weather — dùng cho Model B (fallback)."""
+        return list(NO_WEATHER_FEATURE_COLS)
+
+    @classmethod
+    def get_schema_version(cls) -> str:
         return MODEL_FEATURE_SCHEMA_VERSION

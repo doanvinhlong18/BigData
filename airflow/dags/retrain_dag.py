@@ -1,19 +1,20 @@
 """
 airflow/dags/retrain_dag.py
 ────────────────────────────
-Schedule: 0 2 1 * * (02:00 ngày 1 hàng tháng) hoặc alert trigger.
-
-Thay đổi quan trọng:
-  - Quantile thresholds tính lại từ data thực tế mỗi lần retrain
-  - Lưu quantiles vào MLflow params cùng với model
-  - Monitoring DAG và predict DAG đọc quantiles từ MLflow → không hardcode
-  - Weather merge từ 2526.csv (không phải từ Gold — Gold không lưu weather)
-  - build_training_data() nhận quantiles=None → tự tính → trả về quantiles_used
+Schedule: 0 2 1 * * (02:00 ngày 1 hàng tháng) hoặc trigger từ monitoring alert.
 
 Flow:
-  load_gold_history → build_features_and_label
-                       → [train_model_a ‖ train_model_b]
-                              → compare_and_stage
+  load_and_prepare
+    → [train_model_a ‖ train_model_b]
+         → compare_and_stage
+
+Thay đổi so với trước:
+  - Không ghi temp xuống MinIO — Gold load vào pandas, tính feature,
+    lưu /tmp local để 2 training task song song đọc.
+  - Feature pipeline chạy đúng 1 lần trong load_and_prepare (không gọi lại
+    compute_imbalance / _add_lag_features thủ công trong training task).
+  - Weather không lưu trong Gold — merge từ 2526.csv trước khi tính feature.
+  - Quantiles tính lại từ data thực tế, lưu vào MLflow, không hardcode.
 """
 
 import os, sys, logging
@@ -39,7 +40,9 @@ MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 WEATHER_CSV_PATH = os.getenv("WEATHER_CSV_PATH", "/datasets/weather/2526.csv")
 GOLD_AGG_PATH = "s3://gold/aggregated"
-TEMP_PATH = "s3://gold/_tmp/retrain"
+
+TMP_TRAIN = "/tmp/retrain_train.parquet"
+TMP_VAL = "/tmp/retrain_val.parquet"
 
 STORAGE_OPTS = {
     "aws_access_key_id": MINIO_ACCESS,
@@ -48,7 +51,6 @@ STORAGE_OPTS = {
     "region_name": "us-east-1",
 }
 
-# Weather feature cols — Model B không dùng
 WEATHER_FEATURE_COLS = (
     [
         "temperature_2m",
@@ -85,10 +87,32 @@ LGBM_PARAMS = {
     "seed": 42,
 }
 
+WEATHER_COLS = [
+    "temperature_2m",
+    "relative_humidity_2m",
+    "surface_pressure",
+    "precipitation",
+    "rain",
+    "snowfall",
+    "cloud_cover",
+    "weather_code",
+    "wind_speed_10m",
+    "wind_gusts_10m",
+]
 
-def task_load_gold_history(**ctx):
+
+def task_load_and_prepare(**ctx):
+    """
+    1. Load Gold 12 tháng từ Delta (không ghi temp MinIO)
+    2. Merge weather từ 2526.csv theo (zone_id, window_end)
+       — training dùng toàn bộ lịch sử nên tất cả slots đều có weather,
+         lead weather = shift(-1/-2/-3) trên lịch sử, không cần inject riêng
+    3. Gọi FeatureBuilder.build_training_data() đúng 1 lần
+       — trả về X, y, quantiles_used (không tự tính lại thủ công)
+    4. Time-series split 90/10 theo index (đã sort by window_end trong build_training_data)
+    5. Lưu train/val vào /tmp local — 2 training task đọc song song từ đây
+    """
     from deltalake import DeltaTable
-    from deltalake.writer import write_deltalake
 
     exec_dt = ctx["execution_date"]
     since = pd.Timestamp(exec_dt) - pd.Timedelta(days=365)
@@ -96,127 +120,87 @@ def task_load_gold_history(**ctx):
 
     log.info(f"Loading gold/aggregated: {since} → {until}")
     dt = DeltaTable(GOLD_AGG_PATH, storage_options=STORAGE_OPTS)
-    df = dt.to_pandas(
-        filters=[("window_end", ">=", str(since)), ("window_end", "<=", str(until))]
+    gold = dt.to_pandas(
+        filters=[
+            ("window_end", ">=", str(since)),
+            ("window_end", "<=", str(until)),
+        ]
     )
-    df["window_end"] = pd.to_datetime(df["window_end"])
-    if df.empty:
-        raise ValueError(
-            "gold/aggregated trống — cần ít nhất vài ngày data trước khi retrain"
-        )
-    log.info(f"Loaded {len(df):,} rows, {df['zone_id'].nunique()} zones")
+    gold["window_end"] = pd.to_datetime(gold["window_end"])
 
-    # Weather đã được join vào Gold khi streaming (silver_to_gold.py)
-    # → không cần merge CSV ở đây
-    # Weather leads (lead1/2/3) trong training data = shift(-1/-2/-3) trên lịch sử
-    # vì training dùng toàn bộ historical Gold → tất cả slots đều đã có weather
-    weather_cols = [
-        "temperature_2m",
-        "relative_humidity_2m",
-        "surface_pressure",
-        "precipitation",
-        "rain",
-        "snowfall",
-        "cloud_cover",
-        "weather_code",
-        "wind_speed_10m",
-        "wind_gusts_10m",
-    ]
-    missing = [c for c in weather_cols if c not in df.columns]
-    if missing:
-        log.warning(f"Weather cols missing in Gold: {missing}. Model A có thể kém hơn.")
-    else:
-        log.info(f"Weather available in Gold: {len(weather_cols)} cols")
+    if gold.empty:
+        raise ValueError("gold/aggregated trống — pipeline chưa đủ data để retrain")
+    log.info(f"Gold loaded: {len(gold):,} rows, {gold['zone_id'].nunique()} zones")
 
-    write_deltalake(TEMP_PATH, df, mode="overwrite", storage_options=STORAGE_OPTS)
-    ctx["ti"].xcom_push("n_rows", len(df))
-    log.info(f"Saved {len(df):,} rows to temp")
-
-
-def task_build_features_and_label(**ctx):
-    from deltalake import DeltaTable
-
-    dt = DeltaTable(TEMP_PATH, storage_options=STORAGE_OPTS)
-    df = dt.to_pandas()
-    df["window_end"] = pd.to_datetime(df["window_end"])
-
-    # build_training_data tính: imbalance, temporal, lags, label
-    # quantiles=None → tự tính từ data thực tế → trả về quantiles_used
-    X, y, quantiles_used = FeatureBuilder.build_training_data(df, quantiles=None)
-
-    # Gắn window_end để time-series split
-    df_clean = df.sort_values(["zone_id", "window_end"])
-    df_clean["_label_raw"] = (
-        df_clean.groupby("zone_id")["imbalance"].shift(-4)
-        if "imbalance" in df_clean.columns
-        else None
+    # Merge weather từ CSV — Gold không còn lưu weather
+    # CSV columns: LocationID, datetime (theo notebook) → rename về zone_id, window_end
+    log.info("Merging weather from CSV...")
+    weather = pd.read_csv(
+        WEATHER_CSV_PATH,
+        parse_dates=["datetime"],
+        usecols=["LocationID", "datetime"] + WEATHER_COLS,
     )
-
-    # Lấy window_end cho các rows tương ứng với X
-    # build_training_data drop NaN rows, cần align lại
-    from feature_builder import (
-        compute_imbalance,
-        compute_temporal,
-        _add_lag_features,
-        assign_label_class,
+    weather = weather.rename(
+        columns={"LocationID": "zone_id", "datetime": "window_end"}
     )
+    weather["window_end"] = pd.to_datetime(weather["window_end"])
+    gold = gold.merge(weather, on=["zone_id", "window_end"], how="left")
 
-    df2 = compute_imbalance(df.copy())
-    df2 = compute_temporal(df2)
-    df2 = df2.sort_values(["zone_id", "window_end"]).reset_index(drop=True)
-    df2 = _add_lag_features(df2)
-    df2["label_raw"] = df2.groupby("zone_id")["imbalance"].shift(-4)
-    df2["label_6class"] = df2["label_raw"].apply(
-        lambda x: assign_label_class(x, quantiles_used) if pd.notna(x) else np.nan
-    )
-    df2 = df2.dropna(subset=["label_6class"])
-    df2["label_6class"] = df2["label_6class"].astype(int)
-
-    for c in ALL_FEATURE_COLS:
-        if c not in df2.columns:
-            df2[c] = np.nan
-
-    df2 = df2.sort_values("window_end").reset_index(drop=True)
-    cut = int(len(df2) * 0.9)
-    train_df = df2.iloc[:cut]
-    val_df = df2.iloc[cut:]
-
-    log.info(f"Split: train={len(train_df):,} val={len(val_df):,}")
+    missing_wx = gold[WEATHER_COLS[0]].isna().sum()
     log.info(
-        f"Train label dist:\n{train_df['label_6class'].value_counts().sort_index()}"
+        f"Weather merged: {missing_wx:,} rows thiếu weather ({missing_wx/len(gold)*100:.1f}%)"
     )
-    log.info(f"Quantiles used: {quantiles_used}")
 
-    train_df[ALL_FEATURE_COLS + ["label_6class"]].to_parquet(
-        "/tmp/train.parquet", index=False
+    # Build features + label — 1 lần duy nhất
+    # build_training_data: compute_imbalance → compute_temporal → _add_lag_features
+    #   → label = lead(imbalance, 4) → drop NaN → time-series sort → trả về X, y, quantiles
+    log.info("Building features...")
+    X, y, quantiles_used = FeatureBuilder.build_training_data(gold, quantiles=None)
+    log.info(
+        f"Feature matrix: {X.shape}, label dist:\n{pd.Series(y).value_counts().sort_index()}"
     )
-    val_df[ALL_FEATURE_COLS + ["label_6class"]].to_parquet(
-        "/tmp/val.parquet", index=False
-    )
+    log.info(f"Quantiles: {quantiles_used}")
+
+    # Time-series split 90/10 — không shuffle (temporal dependency)
+    # X đã sort theo window_end bên trong build_training_data
+    cut = int(len(X) * 0.9)
+    X_train = X.iloc[:cut]
+    X_val = X.iloc[cut:]
+    y_train = y.iloc[:cut]
+    y_val = y.iloc[cut:]
+    log.info(f"Split: train={len(X_train):,} val={len(X_val):,}")
+
+    # Lưu /tmp local — nhanh, không cần MinIO, sẽ cleanup sau
+    train_df = X_train.copy()
+    train_df["_label"] = y_train.values
+    val_df = X_val.copy()
+    val_df["_label"] = y_val.values
+    train_df.to_parquet(TMP_TRAIN, index=False)
+    val_df.to_parquet(TMP_VAL, index=False)
+    log.info(f"Saved to {TMP_TRAIN}, {TMP_VAL}")
 
     ctx["ti"].xcom_push("quantiles", quantiles_used)
-    ctx["ti"].xcom_push("n_train", len(train_df))
-    ctx["ti"].xcom_push("n_val", len(val_df))
+    ctx["ti"].xcom_push("n_train", len(X_train))
+    ctx["ti"].xcom_push("n_val", len(X_val))
 
 
-def _train_model(model_name, feat_cols, quantiles, ctx):
-    """Helper dùng chung cho train_model_a và train_model_b."""
+def _train_model(model_name: str, feat_cols: list, quantiles: dict, ctx):
     import lightgbm as lgb
     import mlflow, mlflow.lightgbm
     from sklearn.metrics import accuracy_score, f1_score, classification_report
+    from mlflow import MlflowClient
 
     mlflow.set_tracking_uri(MLFLOW_URI)
 
-    train_df = pd.read_parquet("/tmp/train.parquet")
-    val_df = pd.read_parquet("/tmp/val.parquet")
+    train_df = pd.read_parquet(TMP_TRAIN)
+    val_df = pd.read_parquet(TMP_VAL)
 
-    X_train = train_df[feat_cols]
-    y_train = train_df["label_6class"]
-    X_val = val_df[feat_cols]
-    y_val = val_df["label_6class"]
-
+    # Chỉ giữ feature columns hợp lệ có trong data
+    feat_cols = [c for c in feat_cols if c in train_df.columns]
+    X_train, y_train = train_df[feat_cols], train_df["_label"].astype(int)
+    X_val, y_val = val_df[feat_cols], val_df["_label"].astype(int)
     log.info(
-        f"Training {model_name}: {len(X_train):,} rows × {len(X_train.columns)} features"
+        f"Training {model_name}: {len(X_train):,} rows × {len(feat_cols)} features"
     )
 
     with mlflow.start_run(
@@ -228,8 +212,9 @@ def _train_model(model_name, feat_cols, quantiles, ctx):
                 "model_name": model_name,
                 "n_train": len(X_train),
                 "n_val": len(X_val),
+                "n_features": len(feat_cols),
                 "feature_schema_version": FeatureBuilder.get_schema_version(),
-                # Lưu quantiles vào MLflow — predict + monitor đọc từ đây
+                # Quantiles lưu vào MLflow — monitoring DAG đọc từ đây, không hardcode
                 "label_Q1": quantiles["Q1"],
                 "label_Q2": quantiles["Q2"],
                 "label_Q3": quantiles["Q3"],
@@ -248,10 +233,9 @@ def _train_model(model_name, feat_cols, quantiles, ctx):
             ],
         )
 
-        y_pred_val = model.predict(X_val)
-        val_acc = accuracy_score(y_val, y_pred_val)
-        val_f1 = f1_score(y_val, y_pred_val, average="weighted")
-
+        y_pred = model.predict(X_val)
+        val_acc = accuracy_score(y_val, y_pred)
+        val_f1 = f1_score(y_val, y_pred, average="weighted")
         mlflow.log_metrics(
             {
                 "val_accuracy": val_acc,
@@ -259,20 +243,17 @@ def _train_model(model_name, feat_cols, quantiles, ctx):
                 "best_iteration": model.best_iteration_,
             }
         )
-        log.info(f"{model_name}: val_acc={val_acc:.4f} val_f1={val_f1:.4f}")
-        log.info(f"\n{classification_report(y_val, y_pred_val)}")
+        log.info(f"{model_name}: val_acc={val_acc:.4f} f1={val_f1:.4f}")
+        log.info(f"\n{classification_report(y_val, y_pred)}")
 
-        # Feature importance top 20
         fi = pd.DataFrame(
-            {"feature": X_train.columns, "importance": model.feature_importances_}
-        ).sort_values("importance", ascending=False)
+            {"feature": feat_cols, "importance": model.feature_importances_}
+        )
+        fi = fi.sort_values("importance", ascending=False)
         fi.to_csv("/tmp/fi.csv", index=False)
         mlflow.log_artifact("/tmp/fi.csv", "feature_importance")
-        log.info(f"Top 10:\n{fi.head(10).to_string()}")
 
         mlflow.lightgbm.log_model(model, "model", registered_model_name=model_name)
-
-    from mlflow import MlflowClient
 
     client = MlflowClient(tracking_uri=MLFLOW_URI)
     versions = client.get_latest_versions(model_name, stages=["None"])
@@ -288,16 +269,12 @@ def _train_model(model_name, feat_cols, quantiles, ctx):
 
 
 def task_train_model_a(**ctx):
-    quantiles = ctx["ti"].xcom_pull(
-        key="quantiles", task_ids="build_features_and_label"
-    )
+    quantiles = ctx["ti"].xcom_pull(key="quantiles", task_ids="load_and_prepare")
     _train_model("demand_forecast_with_weather", ALL_FEATURE_COLS, quantiles, ctx)
 
 
 def task_train_model_b(**ctx):
-    quantiles = ctx["ti"].xcom_pull(
-        key="quantiles", task_ids="build_features_and_label"
-    )
+    quantiles = ctx["ti"].xcom_pull(key="quantiles", task_ids="load_and_prepare")
     _train_model("demand_forecast_no_weather", NO_WEATHER_FEATURES, quantiles, ctx)
 
 
@@ -312,10 +289,12 @@ def task_compare_and_stage(**ctx):
     def get_prod_acc(name):
         try:
             vs = client.get_latest_versions(name, stages=["Production"])
-            if not vs:
-                return 0.0
-            return float(
-                client.get_run(vs[0].run_id).data.metrics.get("val_accuracy", 0.0)
+            return (
+                float(
+                    client.get_run(vs[0].run_id).data.metrics.get("val_accuracy", 0.0)
+                )
+                if vs
+                else 0.0
             )
         except:
             return 0.0
@@ -329,33 +308,23 @@ def task_compare_and_stage(**ctx):
         log.info(f"{model_name}: new={new_acc:.4f} prod={prod_acc:.4f}")
 
         if prod_acc == 0.0:
-            # Chưa có Production → promote ngay
             client.transition_model_version_stage(model_name, new_ver, "Production")
-            log.info(f"✅ {model_name} v{new_ver} → Production (first time)")
+            log.info(f"{model_name} v{new_ver} → Production (first deploy)")
         elif new_acc >= prod_acc * 0.90:
-            log.info(f"✅ {model_name} v{new_ver} vào Staging, bắt đầu shadow period")
+            log.info(f"{model_name} v{new_ver} vào Staging — bắt đầu shadow period")
         else:
             client.transition_model_version_stage(model_name, new_ver, "Archived")
             log.warning(
-                f"❌ {model_name} v{new_ver} quá tệ ({new_acc:.4f} < {prod_acc*0.90:.4f}) → Archived"
+                f"{model_name} v{new_ver} archived (new={new_acc:.4f} < {prod_acc*0.90:.4f})"
             )
 
-    # Cleanup temp
-    try:
-        import boto3
-
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=MINIO_ENDPOINT,
-            aws_access_key_id=MINIO_ACCESS,
-            aws_secret_access_key=MINIO_SECRET,
-        )
-        r = s3.list_objects_v2(Bucket="gold", Prefix="_tmp/retrain/")
-        for obj in r.get("Contents", []):
-            s3.delete_object(Bucket="gold", Key=obj["Key"])
-        log.info("Temp data cleaned up")
-    except Exception as e:
-        log.warning(f"Cleanup failed: {e}")
+    # Cleanup /tmp
+    for f in [TMP_TRAIN, TMP_VAL, "/tmp/fi.csv"]:
+        try:
+            os.remove(f)
+        except:
+            pass
+    log.info("Cleanup done")
 
 
 default_args = {
@@ -367,7 +336,7 @@ default_args = {
 
 with DAG(
     dag_id="retrain_models",
-    description="Retrain hàng tháng, quantiles tự tính, lưu vào MLflow",
+    description="Retrain hàng tháng — weather từ CSV, quantiles tự tính",
     schedule_interval="0 2 1 * *",
     start_date=datetime(2025, 1, 1),
     catchup=False,
@@ -376,15 +345,11 @@ with DAG(
     tags=["training", "core"],
 ) as dag:
     t1 = PythonOperator(
-        task_id="load_gold_history", python_callable=task_load_gold_history
-    )
-    t2 = PythonOperator(
-        task_id="build_features_and_label",
-        python_callable=task_build_features_and_label,
+        task_id="load_and_prepare", python_callable=task_load_and_prepare
     )
     t3a = PythonOperator(task_id="train_model_a", python_callable=task_train_model_a)
     t3b = PythonOperator(task_id="train_model_b", python_callable=task_train_model_b)
     t4 = PythonOperator(
         task_id="compare_and_stage", python_callable=task_compare_and_stage
     )
-    t1 >> t2 >> [t3a, t3b] >> t4
+    t1 >> [t3a, t3b] >> t4

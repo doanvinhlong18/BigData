@@ -54,7 +54,7 @@ def run(spark):
             & (col("trip_miles").isNull() | col("trip_miles").between(0, 200))
             & (col("trip_time").isNull() | col("trip_time").between(0, 86400))
         )
-        .drop("kafka_key", "partition", "offset", "source_topic")
+        .drop("partition", "offset")  # Kafka metadata không cần downstream
         .withColumn("silver_ingest_time", current_timestamp())
     )
 
@@ -65,7 +65,7 @@ def run(spark):
         .outputMode("append")
         .option("checkpointLocation", "s3a://silver/checkpoints/request")
         .partitionBy("year", "month", "day")
-        .trigger(processingTime="10 seconds")
+        .trigger(processingTime="1 second")
         .start("s3a://silver/request")
         .awaitTermination()
     )

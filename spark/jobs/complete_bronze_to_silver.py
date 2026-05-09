@@ -1,19 +1,37 @@
 """
 spark/jobs/complete_bronze_to_silver.py
 ─────────────────────────────────────────
-Bronze request + Bronze response → Silver complete
+Silver request + Bronze response → Silver complete
 
-Request stream: trip_id, request_datetime, PULocationID, DOLocationID, flags
-Response stream: trip_id, dropoff_datetime, pickup_datetime, on_scene_datetime,
-                 trip_miles, trip_time, financials, match_flags
+Source:
+  Stream 1: silver/request       — đã dedup + clean ở request_bronze_to_silver.py
+  Stream 2: bronze/sorted_response_table — raw, filter + dedup inline ở đây
 
-Join theo trip_id + time constraints → silver/complete có đầy đủ tất cả.
-pickup_datetime chỉ xuất hiện ở đây sau khi join xong.
+Lý do không dùng silver/response riêng:
+  Chỉ có 2 silver tables: silver/request và silver/complete.
+  Response không cần lưu riêng vì không có downstream nào đọc response
+  độc lập (ngoài join này).
+
+Watermark:
+  Request side: 3 giờ — cần giữ state đủ lâu chờ response đến
+  Response side: 15 phút — response vào gần như lúc nào request cũng đã có
+                            trong state, không cần đợi lâu
+
+Join condition:
+  trip_id khớp + dropoff trong khoảng [request, request + 3h]
 """
 
 import os, logging
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, expr, current_timestamp
+from pyspark.sql.functions import (
+    col,
+    expr,
+    current_timestamp,
+    to_timestamp,
+    year,
+    month,
+    dayofmonth,
+)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("complete_bronze_to_silver")
@@ -41,18 +59,13 @@ def get_spark():
 
 
 def run(spark):
-    # Stream 1: Request — chỉ có request_datetime, locations, flags
-    # KHÔNG có pickup_datetime vì lúc request chưa biết tài xế đến lúc nào
+    # Stream 1: Silver request — đã dedup + clean
+    # Watermark 3h: giữ state request đủ lâu chờ response đến (chuyến xa nhất ~2h)
     req = (
         spark.readStream.format("delta")
         .option("ignoreChanges", "true")
-        .load("s3a://bronze/sorted_request_table")
-        .filter(
-            col("trip_id").isNotNull()
-            & col("request_datetime").isNotNull()
-            & col("PULocationID").isNotNull()
-        )
-        .withWatermark("request_datetime", "15 minutes")
+        .load("s3a://silver/request")
+        .withWatermark("request_datetime", "3 hours")
         .select(
             "trip_id",
             "hvfhs_license_num",
@@ -61,7 +74,6 @@ def run(spark):
             "PULocationID",
             "DOLocationID",
             "request_datetime",
-            # Flags từ request
             "wav_request_flag",
             "access_a_ride_flag",
             "shared_request_flag",
@@ -71,8 +83,9 @@ def run(spark):
         )
     )
 
-    # Stream 2: Response — có pickup_datetime, financials, match_flags
-    # pickup_datetime chỉ biết sau khi tài xế đã đón khách → chỉ có ở response
+    # Stream 2: Bronze response — chưa clean, xử lý inline
+    # Watermark 15 phút: request luôn đến trước, response vào là khớp ngay
+    # dropDuplicatesWithinWatermark: phòng producer retry gửi trùng
     res = (
         spark.readStream.format("delta")
         .option("ignoreChanges", "true")
@@ -81,12 +94,14 @@ def run(spark):
             col("trip_id").isNotNull()
             & col("dropoff_datetime").isNotNull()
             & col("pickup_datetime").isNotNull()
-        )  # response phải có pickup_datetime
+            & (col("pickup_datetime") < col("dropoff_datetime"))
+        )
         .withWatermark("dropoff_datetime", "15 minutes")
+        .dropDuplicatesWithinWatermark(["trip_id"])
         .select(
             "trip_id",
             "dropoff_datetime",
-            "pickup_datetime",  # ← từ response, đây là lúc tài xế đón khách
+            "pickup_datetime",
             "on_scene_datetime",
             "trip_miles",
             "trip_time",
@@ -104,17 +119,17 @@ def run(spark):
         )
     )
 
-    # Stream-stream join
-    # Sau khi join: có đủ tất cả — request_datetime + pickup_datetime + dropoff_datetime
+    # Stream-stream join: trip_id + time constraint
+    # Request state (3h) đảm bảo Spark giữ đủ lâu để response kịp khớp
     complete = (
         req.alias("req")
         .join(
             res.alias("res"),
             expr("""
-            req.trip_id = res.trip_id
-            AND res.dropoff_datetime >= req.request_datetime
-            AND res.dropoff_datetime <= req.request_datetime + INTERVAL 3 HOURS
-        """),
+                req.trip_id = res.trip_id
+                AND res.dropoff_datetime >= req.request_datetime
+                AND res.dropoff_datetime <= req.request_datetime + INTERVAL 3 HOURS
+            """),
             "inner",
         )
         .select(
@@ -124,9 +139,8 @@ def run(spark):
             col("req.originating_base_num"),
             col("req.PULocationID"),
             col("req.DOLocationID"),
-            # Tất cả timestamps — pickup_datetime đến từ response stream
             col("req.request_datetime"),
-            col("res.pickup_datetime"),  # từ response
+            col("res.pickup_datetime"),  # từ response — lúc tài xế đón
             col("res.on_scene_datetime"),
             col("res.dropoff_datetime"),
             col("res.trip_miles"),
