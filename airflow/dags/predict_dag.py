@@ -1,265 +1,370 @@
 """
-airflow/dags/weather_and_predict_dag.py
-────────────────────────────────────────
+airflow/dags/predict_dag.py
 Schedule: */15 * * * *
 
-Weather không lưu trong Gold hay Silver — load từ CSV mỗi lần cần.
-2526.csv: 263 zones × toàn bộ 2025-2026 × mỗi 15 phút (~9M rows).
-Load toàn bộ lên RAM một lần rồi filter theo timestamp — nhanh hơn
-query Delta nhiều lần cho các slot lẻ.
+Hệ thống đang replay lịch sử x60 → mọi logic thời gian dùng
+event_time (window_end từ gold), KHÔNG dùng now()/wall clock.
 
-Flow:
-  Task predict (single task):
-    1. Load 2526.csv vào pandas (cache process-level nếu DAG run liên tiếp)
-    2. Load Gold 7 ngày history từ Delta
-    3. Merge weather vào gold_df theo (zone_id, window_end)
-       — bao gồm cả 3 slot tương lai (T+15/30/45) để tính lead features
-    4. build_inference_matrix() → tính imbalance, temporal, lag, lead weather
-    5. inject_weather_leads() với 3 slots tương lai
-    6. Predict Model A (có weather) / Model B (fallback không weather)
-    7. Append 263 rows vào gold/predictions_monitoring
+Thay đổi:
+  - FIX Lỗi 1  : _load_latest_gold dùng get_add_actions() thay vì full scan
+  - FIX Lỗi 4  : predicted_at = window_end (event_time), không dùng now()
+  - WEATHER     : Parquet partitioned date=YYYY-MM-DD, filter theo event_time
+  - OUTPUT      : Upsert vào PostgreSQL, ON CONFLICT DO UPDATE — idempotent
+  - DEMO MODE   : bỏ alert/shadow logic phức tạp
 """
 
 import os, sys, logging
-from datetime import datetime, timedelta
-import numpy as np
+from datetime import datetime, timedelta, timezone
+
 import pandas as pd
+import numpy as np
+import mlflow
+from deltalake import DeltaTable
+import psycopg2
+from psycopg2.extras import execute_values
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-sys.path.insert(0, os.path.join(os.environ.get("AIRFLOW_HOME", "/opt/airflow"), "ml"))
-from feature_builder import FeatureBuilder
+sys.path.insert(0, "/opt/airflow/ml")
+from feature_builder import (
+    FeatureBuilder,
+    ALL_FEATURE_COLS,
+    NO_WEATHER_FEATURE_COLS,
+    inject_weather_leads,
+    LAG_STEPS,
+)
 
-log = logging.getLogger("predict")
+log = logging.getLogger(__name__)
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
-MINIO_ACCESS = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
-WEATHER_CSV_PATH = os.getenv("WEATHER_CSV_PATH", "/datasets/weather/2526.csv")
+MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 GOLD_AGG_PATH = "s3://gold/aggregated"
-GOLD_PRED_PATH = "s3://gold/predictions_monitoring"
-HISTORY_HOURS = 168  # 7 ngày — đủ cho lag668
+WEATHER_PARQUET_BASE = os.getenv("WEATHER_PARQUET_PATH", "s3://weather/parquet")
 
 STORAGE_OPTS = {
-    "aws_access_key_id": MINIO_ACCESS,
+    "endpoint_url": MINIO_ENDPOINT,
+    "aws_access_key_id": MINIO_KEY,
     "aws_secret_access_key": MINIO_SECRET,
-    "aws_endpoint_url": MINIO_ENDPOINT,
     "region_name": "us-east-1",
+    "aws_allow_http": "true",
+    "aws_s3_allow_unsafe_rename": "true",
 }
 
-WEATHER_COLS = [
-    "temperature_2m",
-    "relative_humidity_2m",
-    "surface_pressure",
-    "precipitation",
-    "rain",
-    "snowfall",
-    "cloud_cover",
-    "weather_code",
-    "wind_speed_10m",
-    "wind_gusts_10m",
-]
-LAG_WEATHER_COLS = [
-    "temperature_2m",
-    "relative_humidity_2m",
-    "surface_pressure",
-    "cloud_cover",
-    "weather_code",
-]
+PG_HOST = os.getenv("POSTGRES_HOST", "postgres")
+PG_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
+PG_DB = os.getenv("POSTGRES_DB", "bigdata")
+PG_USER = os.getenv("POSTGRES_USER", "admin")
+PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin123")
+
+SLOT_MINUTES = 15
 
 
-def load_weather_csv() -> pd.DataFrame:
-    """
-    Load toàn bộ 2526.csv vào RAM.
-    CSV columns thực tế: LocationID, datetime (theo notebook cell 23).
-    Rename về zone_id, window_end để khớp với Gold schema.
-    ~9M rows × 12 cols — load 1 lần mỗi DAG run, filter theo timestamp cần thiết.
-    """
-    df = pd.read_csv(
-        WEATHER_CSV_PATH,
-        parse_dates=["datetime"],
-        usecols=["LocationID", "datetime"] + WEATHER_COLS,
+def _pg_conn():
+    return psycopg2.connect(
+        host=PG_HOST,
+        port=PG_PORT,
+        dbname=PG_DB,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        connect_timeout=10,
     )
-    df = df.rename(columns={"LocationID": "zone_id", "datetime": "window_end"})
-    df["window_end"] = pd.to_datetime(df["window_end"])
-    log.info(f"Weather CSV loaded: {len(df):,} rows")
-    return df
+
+
+def _ensure_table():
+    ddl = """
+    CREATE TABLE IF NOT EXISTS predictions_monitoring (
+        zone_id             INTEGER      NOT NULL,
+        window_end          TIMESTAMPTZ  NOT NULL,
+        predicted_class     SMALLINT     NOT NULL,
+        pred_confidence     REAL         NOT NULL,
+        used_model          VARCHAR(20)  NOT NULL,
+        model_version       VARCHAR(20),
+        predicted_at        TIMESTAMPTZ  NOT NULL,
+        shadow_predicted_class SMALLINT,
+        proba_0 REAL, proba_1 REAL, proba_2 REAL,
+        proba_3 REAL, proba_4 REAL, proba_5 REAL,
+        shadow_proba_0 REAL, shadow_proba_1 REAL, shadow_proba_2 REAL,
+        shadow_proba_3 REAL, shadow_proba_4 REAL, shadow_proba_5 REAL,
+        PRIMARY KEY (zone_id, window_end)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pred_predicted_at
+        ON predictions_monitoring (predicted_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_pred_window_end
+        ON predictions_monitoring (window_end DESC);
+    CREATE INDEX IF NOT EXISTS idx_pred_zone_time
+        ON predictions_monitoring (zone_id, window_end DESC);
+    CREATE INDEX IF NOT EXISTS idx_pred_used_model
+        ON predictions_monitoring (used_model, window_end DESC);
+    """
+    with _pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(ddl)
+        conn.commit()
+
+
+def _load_latest_gold():
+    """
+    FIX Lỗi 1: get_add_actions() đọc Delta transaction log JSON (nhỏ),
+    lấy max(window_end) từ file-level stats — O(n_files) không O(n_rows).
+    Sau đó load đúng 3 snapshot qua predicate pushdown.
+    """
+    try:
+        dt = DeltaTable(GOLD_AGG_PATH, storage_options=STORAGE_OPTS)
+        add_actions = dt.get_add_actions(flatten=True).to_pydict()
+        max_col = "max.window_end"
+
+        if max_col in add_actions and add_actions[max_col]:
+            raw_max = max(v for v in add_actions[max_col] if v is not None)
+            latest_we = pd.Timestamp(raw_max)
+            if latest_we.tzinfo is None:
+                latest_we = latest_we.tz_localize("UTC")
+            log.info(f"[GOLD] latest_we from Delta stats: {latest_we}")
+        else:
+            log.warning("[GOLD] Delta stats unavailable, column-scan fallback")
+            tmp = dt.to_pandas(columns=["window_end"])
+            if tmp.empty:
+                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            tmp["window_end"] = pd.to_datetime(tmp["window_end"])
+            latest_we = tmp["window_end"].max()
+
+        lag92_we = latest_we - pd.Timedelta(minutes=SLOT_MINUTES * LAG_STEPS[0])
+        lag668_we = latest_we - pd.Timedelta(minutes=SLOT_MINUTES * LAG_STEPS[1])
+
+        def snap(we):
+            return dt.to_pandas(filters=[("window_end", "=", str(we))])
+
+        cur_df = snap(latest_we)
+        l92_df = snap(lag92_we)
+        l668_df = snap(lag668_we)
+        log.info(f"[GOLD] cur={len(cur_df)} lag92={len(l92_df)} lag668={len(l668_df)}")
+        return cur_df, l92_df, l668_df
+
+    except Exception as e:
+        log.warning(f"[GOLD] load failed: {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+
+def _get_s3_fs():
+    import pyarrow.fs as pafs
+
+    return pafs.S3FileSystem(
+        endpoint_override=MINIO_ENDPOINT.replace("http://", "").replace("https://", ""),
+        access_key=MINIO_KEY,
+        secret_key=MINIO_SECRET,
+        scheme="http",
+    )
+
+
+def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
+    """
+    Tính partition ngày cần load dựa trên event_time (slot_end),
+    KHÔNG dùng wall clock — hệ thống đang replay dữ liệu 2025.
+    """
+    import pyarrow.dataset as ds
+
+    needed: set[str] = set()
+    for delta_min in [
+        0,
+        15,
+        30,
+        45,
+        SLOT_MINUTES * LAG_STEPS[0],
+        SLOT_MINUTES * LAG_STEPS[1],
+    ]:
+        pt = slot_end - pd.Timedelta(minutes=delta_min)
+        needed.add(pt.strftime("%Y-%m-%d"))
+        # edge case: slot cuối ngày + weather lead vượt sang ngày hôm sau
+        needed.add((pt + pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
+
+    frames = []
+    for d in sorted(needed):
+        try:
+            dataset = ds.dataset(
+                f"{WEATHER_PARQUET_BASE}/date={d}/",
+                format="parquet",
+                filesystem=_get_s3_fs(),
+            )
+            part = dataset.to_table().to_pandas()
+            if not part.empty:
+                frames.append(part)
+        except Exception:
+            pass  # partition không tồn tại cho ngày đó — bình thường
+
+    if frames:
+        wdf = pd.concat(frames, ignore_index=True)
+        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+        log.info(f"[WEATHER] {len(wdf)} rows from {len(frames)} partitions")
+        return wdf
+
+    # Fallback CSV — filter đúng ngày event_time, không load toàn bộ
+    csv_path = os.getenv("WEATHER_CSV_PATH", "/datasets/weather/2526.csv")
+    if os.path.exists(csv_path):
+        log.warning("[WEATHER] Parquet not found, CSV fallback")
+        wdf = pd.read_csv(csv_path, parse_dates=["window_end"])
+        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+        wdf = wdf[wdf["window_end"].dt.strftime("%Y-%m-%d").isin(needed)]
+        return wdf
+
+    return pd.DataFrame()
 
 
 def task_predict(**ctx):
-    from deltalake import DeltaTable
-    from deltalake.writer import write_deltalake
-    import mlflow, mlflow.lightgbm
-    from mlflow import MlflowClient
+    _ensure_table()
+
+    cur_df, l92_df, l668_df = _load_latest_gold()
+    if cur_df.empty:
+        log.info("[PREDICT] No gold data, skip")
+        return
+
+    cur_df["window_end"] = pd.to_datetime(cur_df["window_end"])
+    slot_end = cur_df["window_end"].iloc[0]
+    log.info(f"[PREDICT] slot_end (event_time) = {slot_end}")
+
+    weather_df = _load_weather(slot_end)
+
+    feat_df = FeatureBuilder.build_inference_matrix_from_snapshots(
+        current_df=cur_df,
+        lag92_df=l92_df,
+        lag668_df=l668_df,
+        weather_df=weather_df if not weather_df.empty else None,
+    )
+    if not weather_df.empty:
+        feat_df = inject_weather_leads(feat_df, weather_df)
 
     mlflow.set_tracking_uri(MLFLOW_URI)
+    client = mlflow.tracking.MlflowClient()
 
-    exec_dt = ctx["execution_date"]
-    window_end = pd.Timestamp(exec_dt).floor("15min")
-    since = window_end - pd.Timedelta(hours=HISTORY_HOURS)
-    lead_slots = [window_end + pd.Timedelta(minutes=15 * i) for i in [1, 2, 3]]
-
-    # ── 1. Load Gold 7 ngày ───────────────────────────────────────────────────
-    dt = DeltaTable(GOLD_AGG_PATH, storage_options=STORAGE_OPTS)
-    gold_df = dt.to_pandas(
-        filters=[
-            ("window_end", ">=", str(since)),
-            ("window_end", "<=", str(window_end)),
-        ]
-    )
-    gold_df["window_end"] = pd.to_datetime(gold_df["window_end"])
-    if gold_df.empty:
-        raise ValueError(
-            f"gold/aggregated trống đến {window_end}. Pipeline chưa đủ data."
-        )
-    log.info(f"Gold history: {len(gold_df):,} rows")
-
-    # ── 2. Load weather CSV + merge vào Gold ─────────────────────────────────
-    # Load toàn bộ CSV rồi filter — nhanh hơn query Delta nhiều lần
-    weather_df = load_weather_csv()
-
-    # Slots cần: 7 ngày lịch sử (để tính lag1-4) + 3 slots tương lai (để tính lead1-3)
-    needed_slots = set(gold_df["window_end"].tolist()) | set(lead_slots)
-    weather_slice = weather_df[weather_df["window_end"].isin(needed_slots)].copy()
-
-    # Merge weather vào gold (chỉ slots lịch sử — các slot tương lai không có Gold row)
-    gold_with_wx = gold_df.merge(
-        weather_slice, on=["zone_id", "window_end"], how="left"
-    )
-    log.info(
-        f"Weather merged: {gold_with_wx[WEATHER_COLS[0]].notna().sum()} rows có weather"
-    )
-
-    # ── 3. Build feature matrix ───────────────────────────────────────────────
-    # build_inference_matrix tính: imbalance, temporal features, lag (bao gồm lag weather)
-    X = FeatureBuilder.build_inference_matrix(gold_with_wx)
-
-    # Inject lead weather từ CSV (T+15, T+30, T+45) — không có trong Gold history
-    leads_df = weather_slice[weather_slice["window_end"].isin(lead_slots)][
-        ["zone_id", "window_end"] + LAG_WEATHER_COLS
-    ].copy()
-    if not leads_df.empty:
-        X = FeatureBuilder.inject_weather_leads(X, leads_df)
-
-    # ── 4. Load models ────────────────────────────────────────────────────────
-    def load_model(name, stage="Production"):
+    def load_model(name):
         try:
-            m = mlflow.lightgbm.load_model(f"models:/{name}/{stage}")
-            log.info(f"Loaded {name}/{stage}")
-            return m
-        except Exception as e:
-            if stage == "Production":
-                raise RuntimeError(
-                    f"Cannot load {name}: {e}. Chạy retrain_models trước."
-                )
-            return None
-
-    model_a = load_model("demand_forecast_with_weather")
-    model_b = load_model("demand_forecast_no_weather")
-    shadow_a = load_model("demand_forecast_with_weather", "Staging")
-    shadow_b = load_model("demand_forecast_no_weather", "Staging")
-
-    client = MlflowClient(tracking_uri=MLFLOW_URI)
-
-    def get_run_id(name, stage="Production"):
-        try:
-            vs = client.get_latest_versions(name, stages=[stage])
-            return vs[0].run_id if vs else "unknown"
-        except:
-            return "unknown"
-
-    feat_cols = FeatureBuilder.get_feature_columns()
-    weather_check_cols = [c for c in WEATHER_COLS if c in X.columns]
-
-    # ── 5. Predict per zone ───────────────────────────────────────────────────
-    # Batch predict toàn bộ 263 zones cùng lúc — nhanh hơn loop per zone
-    X_feat = X[feat_cols].copy()
-    has_weather = X_feat[weather_check_cols].notna().all(axis=1)
-
-    # Model A: zones có đủ weather
-    results_a = pd.DataFrame(index=X.index)
-    if has_weather.any():
-        proba_a = model_a.predict(X_feat[has_weather])
-        results_a.loc[has_weather, "predicted_class"] = proba_a.argmax(axis=1)
-        results_a.loc[has_weather, "pred_confidence"] = proba_a.max(axis=1)
-        results_a.loc[has_weather, "used_model"] = "model_a"
-        for i in range(6):
-            results_a.loc[has_weather, f"proba_{i}"] = proba_a[:, i]
-
-    # Model B: zones thiếu weather
-    if (~has_weather).any():
-        feat_b = FeatureBuilder.get_no_weather_feature_columns()
-        X_b = X_feat.loc[~has_weather, feat_b]
-        proba_b = model_b.predict(X_b)
-        results_a.loc[~has_weather, "predicted_class"] = proba_b.argmax(axis=1)
-        results_a.loc[~has_weather, "pred_confidence"] = proba_b.max(axis=1)
-        results_a.loc[~has_weather, "used_model"] = "model_b_fallback"
-        for i in range(6):
-            results_a.loc[~has_weather, f"proba_{i}"] = proba_b[:, i]
-
-    pred_df = pd.concat([X[["zone_id"]], results_a], axis=1)
-    pred_df["predicted_class"] = pred_df["predicted_class"].astype(int)
-    pred_df["model_version"] = pred_df["used_model"].map(
-        {
-            "model_a": get_run_id("demand_forecast_with_weather"),
-            "model_b_fallback": get_run_id("demand_forecast_no_weather"),
-        }
-    )
-
-    # Shadow predictions
-    if shadow_a or shadow_b:
-        shad_feat_a = FeatureBuilder.get_feature_columns()
-        shad_feat_b = FeatureBuilder.get_no_weather_feature_columns()
-        shad_proba = np.zeros((len(X), 6))
-        if shadow_a and has_weather.any():
-            shad_proba[has_weather.values] = shadow_a.predict(X_feat[has_weather])
-        if shadow_b and (~has_weather).any():
-            shad_proba[~has_weather.values] = shadow_b.predict(
-                X_feat.loc[~has_weather, shad_feat_b]
+            vs = client.get_latest_versions(name, stages=["Production"])
+            if not vs:
+                return None, None
+            return (
+                mlflow.lightgbm.load_model(f"models:/{name}/Production"),
+                vs[0].version,
             )
-        pred_df["shadow_predicted_class"] = shad_proba.argmax(axis=1)
-        for i in range(6):
-            pred_df[f"shadow_proba_{i}"] = shad_proba[:, i]
-    else:
-        pred_df["shadow_predicted_class"] = None
-        for i in range(6):
-            pred_df[f"shadow_proba_{i}"] = None
+        except Exception as e:
+            log.warning(f"[MODEL] {name}: {e}")
+            return None, None
 
-    # Metadata + null actuals
-    pred_df["window_end"] = window_end
-    pred_df["feature_schema_version"] = FeatureBuilder.get_schema_version()
-    pred_df["predicted_at"] = pd.Timestamp.utcnow()
-    pred_df["actual_label_class"] = None
-    pred_df["is_correct"] = None
-    pred_df["shadow_is_correct"] = None
-    pred_df["evaluated_at"] = None
+    model_a, ver_a = load_model("demand_forecast_model_a")
+    model_b, ver_b = load_model("demand_forecast_model_b")
+    shadow, _ = load_model("demand_forecast_shadow")
 
-    n_a = (pred_df["used_model"] == "model_a").sum()
-    n_b = (pred_df["used_model"] == "model_b_fallback").sum()
-    log.info(f"Predicted {window_end}: {n_a} Model A, {n_b} Model B")
+    # predicted_at = slot_end (event_time)
+    # Wall clock now() sẽ sai vì hệ thống replay x60:
+    # 1 giờ thực tế = 60 giờ event_time → Grafana time axis bị lệch hoàn toàn
+    predicted_at = slot_end
 
-    write_deltalake(
-        GOLD_PRED_PATH, pred_df, mode="append", storage_options=STORAGE_OPTS
-    )
-    log.info(f"Written {len(pred_df)} rows → predictions_monitoring")
+    rows = []
+    for _, row in feat_df.iterrows():
+        zone_id = int(row["zone_id"])
+        has_weather = all(
+            pd.notna(row.get(f"temperature_2m_lead{i}")) for i in [1, 2, 3]
+        )
 
+        if model_a and has_weather:
+            x = row[ALL_FEATURE_COLS].values.reshape(1, -1)
+            proba = model_a.predict_proba(x)[0]
+            pred, used, m_ver = int(np.argmax(proba)), "model_a", ver_a
+        elif model_b:
+            x = row[NO_WEATHER_FEATURE_COLS].values.reshape(1, -1)
+            proba = model_b.predict_proba(x)[0]
+            pred, used, m_ver = int(np.argmax(proba)), "model_b", ver_b
+        else:
+            proba = np.zeros(6)
+            proba[0] = 1.0
+            pred, used, m_ver = 0, "fallback", None
 
-default_args = {
-    "owner": "bigdata",
-    "retries": 1,
-    "retry_delay": timedelta(minutes=2),
-    "execution_timeout": timedelta(minutes=10),
-}
+        shadow_pred, shadow_proba = None, [None] * 6
+        if shadow:
+            try:
+                sx = row[ALL_FEATURE_COLS].values.reshape(1, -1)
+                sp = shadow.predict_proba(sx)[0]
+                shadow_pred = int(np.argmax(sp))
+                shadow_proba = sp.tolist()
+            except Exception:
+                pass
+
+        rows.append(
+            {
+                "zone_id": zone_id,
+                "window_end": slot_end,
+                "predicted_class": pred,
+                "pred_confidence": float(proba[pred]),
+                "used_model": used,
+                "model_version": str(m_ver) if m_ver else None,
+                "predicted_at": predicted_at,
+                "shadow_predicted_class": shadow_pred,
+                **{f"proba_{i}": float(proba[i]) for i in range(6)},
+                **{
+                    f"shadow_proba_{i}": (
+                        float(shadow_proba[i]) if shadow_proba[i] is not None else None
+                    )
+                    for i in range(6)
+                },
+            }
+        )
+
+    if not rows:
+        return
+
+    cols = [
+        "zone_id",
+        "window_end",
+        "predicted_class",
+        "pred_confidence",
+        "used_model",
+        "model_version",
+        "predicted_at",
+        "shadow_predicted_class",
+        "proba_0",
+        "proba_1",
+        "proba_2",
+        "proba_3",
+        "proba_4",
+        "proba_5",
+        "shadow_proba_0",
+        "shadow_proba_1",
+        "shadow_proba_2",
+        "shadow_proba_3",
+        "shadow_proba_4",
+        "shadow_proba_5",
+    ]
+    update_cols = [c for c in cols if c not in ("zone_id", "window_end")]
+    upsert_sql = f"""
+        INSERT INTO predictions_monitoring ({', '.join(cols)}) VALUES %s
+        ON CONFLICT (zone_id, window_end) DO UPDATE SET
+        {', '.join(f'{c} = EXCLUDED.{c}' for c in update_cols)}
+    """
+    with _pg_conn() as conn:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                upsert_sql,
+                [tuple(r[c] for c in cols) for r in rows],
+                page_size=500,
+            )
+        conn.commit()
+
+    log.info(f"[PREDICT] upserted {len(rows)} zones → slot {slot_end}")
+
 
 with DAG(
-    dag_id="weather_and_predict",
-    description="Predict demand mỗi 15 phút — weather từ CSV",
+    dag_id="predict_demand",
     schedule_interval="*/15 * * * *",
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    max_active_runs=1,
-    default_args=default_args,
-    tags=["prediction", "core"],
+    default_args={
+        "owner": "airflow",
+        "retries": 1,
+        "retry_delay": timedelta(minutes=2),
+    },
+    tags=["ml", "inference"],
 ) as dag:
-    PythonOperator(task_id="predict", python_callable=task_predict)
+    PythonOperator(
+        task_id="predict", python_callable=task_predict, provide_context=True
+    )

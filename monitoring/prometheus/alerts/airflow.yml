@@ -1,0 +1,84 @@
+groups:
+  - name: airflow_alerts
+    interval: 60s
+    rules:
+      # ── Airflow webserver down ────────────────────────────────
+      - alert: AirflowDown
+        expr: up{job="airflow"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: airflow
+        annotations:
+          summary: "🔴 Airflow DOWN"
+          description: "Airflow webserver/scheduler không phản hồi. DAGs sẽ ngừng chạy."
+
+      # ── predict_dag không chạy trong 20 phút ──────────────────
+      # FIX BUG-13: dùng airflow_dag_last_run_seconds_ago (seconds_ago = bao nhiêu giây trước)
+      # Metric > 1200 nghĩa là DAG được scan lần cuối cách đây >20 phút
+      - alert: AirflowPredictDagStale
+        expr: |
+          airflow_dag_last_run_seconds_ago{dag_id="predict_demand"} > 1200
+          or absent(airflow_dag_last_run_seconds_ago{dag_id="predict_demand"}) == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: airflow
+        annotations:
+          summary: "🔴 DAG predict_demand không chạy trong {{ $value }}s"
+          description: |
+            predict_demand schedule là */15 phút nhưng last_run cách đây {{ $value }}s.
+            Prediction pipeline bị ngừng — gold/predictions_monitoring không được cập nhật.
+
+      # ── monitoring_dag không chạy trong 70 phút ───────────────
+      - alert: AirflowMonitoringDagStale
+        expr: |
+          airflow_dag_last_run_seconds_ago{dag_id="pipeline_monitoring"} > 4200
+          or absent(airflow_dag_last_run_seconds_ago{dag_id="pipeline_monitoring"}) == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: airflow
+        annotations:
+          summary: "⚠️ DAG pipeline_monitoring không chạy trong {{ $value }}s"
+          description: "Health check DAG bị stuck. Shadow model promotion sẽ không hoạt động."
+
+      # ── DAG task failed ───────────────────────────────────────
+      - alert: AirflowTaskFailed
+        expr: |
+          increase(airflow_task_failed_total[30m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: airflow
+        annotations:
+          summary: "⚠️ Airflow task thất bại: {{ $labels.dag_id }}.{{ $labels.task_id }}"
+          description: |
+            DAG {{ $labels.dag_id }} task {{ $labels.task_id }} failed {{ $value }} lần trong 30 phút.
+            Kiểm tra Airflow logs tại cổng 8888 trên master node.
+
+      # ── Scheduler heartbeat mất ───────────────────────────────
+      - alert: AirflowSchedulerNotHeartbeating
+        expr: |
+          rate(airflow_scheduler_heartbeat_total[5m]) == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: airflow
+        annotations:
+          summary: "🔴 Airflow Scheduler không heartbeat trong {{ $value | humanizeDuration }}"
+          description: "Scheduler bị crash. DAGs sẽ không được schedule. Restart Airflow container."
+
+      # ── SQLite lock timeout (vì dùng SQLite + LocalExecutor) ──
+      - alert: AirflowDagRunQueueHigh
+        expr: |
+          airflow_dag_run_queued > 5
+        for: 10m
+        labels:
+          severity: warning
+          component: airflow
+        annotations:
+          summary: "⚠️ {{ $value }} DAG runs đang queue — có thể SQLite contention"
+          description: |
+            Nhiều DAG run bị queue. Dấu hiệu SQLite write lock.
+            Cân nhắc chuyển sang PostgreSQL (đã có config trong .env).

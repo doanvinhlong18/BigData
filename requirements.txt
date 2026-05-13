@@ -75,3 +75,4 @@ urllib3==2.6.3
 wcwidth==0.6.0
 zict==3.0.0
 zipp==3.23.0
+holidays

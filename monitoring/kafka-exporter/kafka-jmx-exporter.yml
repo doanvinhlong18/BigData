@@ -1,0 +1,107 @@
+---
+# kafka-jmx-exporter.yml
+# Cấu hình cho prometheus/jmx_exporter — expose Kafka broker metrics
+# Mount file này vào kafka container và start JMX exporter agent
+
+startDelaySeconds: 30
+ssl: false
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+rules:
+  # ── Broker topic metrics ──────────────────────────────────────
+  - pattern: kafka.server<type=BrokerTopicMetrics, name=MessagesInPerSec, topic=(.+)><>OneMinuteRate
+    name: kafka_server_brokertopicmetrics_messagesin_rate1m
+    labels:
+      topic: "$1"
+    help: "Messages in per second (1m rate)"
+    type: GAUGE
+
+  - pattern: kafka.server<type=BrokerTopicMetrics, name=BytesInPerSec, topic=(.+)><>OneMinuteRate
+    name: kafka_server_brokertopicmetrics_bytesin_rate1m
+    labels:
+      topic: "$1"
+    type: GAUGE
+
+  - pattern: kafka.server<type=BrokerTopicMetrics, name=BytesOutPerSec, topic=(.+)><>OneMinuteRate
+    name: kafka_server_brokertopicmetrics_bytesout_rate1m
+    labels:
+      topic: "$1"
+    type: GAUGE
+
+  # Total messages (counter)
+  - pattern: kafka.server<type=BrokerTopicMetrics, name=MessagesInPerSec><>Count
+    name: kafka_server_brokertopicmetrics_messagesin_total
+    type: COUNTER
+
+  # ── Request metrics ───────────────────────────────────────────
+  - pattern: kafka.network<type=RequestMetrics, name=RequestsPerSec, request=(.+)><>OneMinuteRate
+    name: kafka_network_requestmetrics_requests_rate1m
+    labels:
+      request: "$1"
+    type: GAUGE
+
+  - pattern: kafka.network<type=RequestMetrics, name=TotalTimeMs, request=(.+)><>(Mean|99thPercentile)
+    name: kafka_network_requestmetrics_total_time_ms
+    labels:
+      request: "$1"
+      quantile: "$2"
+    type: GAUGE
+
+  # ── Replica manager ───────────────────────────────────────────
+  - pattern: kafka.server<type=ReplicaManager, name=UnderReplicatedPartitions><>Value
+    name: kafka_server_replicamanager_underreplicatedpartitions
+    type: GAUGE
+
+  - pattern: kafka.server<type=ReplicaManager, name=PartitionCount><>Value
+    name: kafka_server_replicamanager_partition_count
+    type: GAUGE
+
+  - pattern: kafka.server<type=ReplicaManager, name=LeaderCount><>Value
+    name: kafka_server_replicamanager_leader_count
+    type: GAUGE
+
+  # ── Log metrics (disk usage) ──────────────────────────────────
+  - pattern: kafka.log<type=Log, name=Size, topic=(.+), partition=(.+)><>Value
+    name: kafka_log_log_size
+    labels:
+      topic: "$1"
+      partition: "$2"
+    type: GAUGE
+
+  - pattern: kafka.log<type=Log, name=LogEndOffset, topic=(.+), partition=(.+)><>Value
+    name: kafka_log_log_end_offset
+    labels:
+      topic: "$1"
+      partition: "$2"
+    type: GAUGE
+
+  # ── Controller ───────────────────────────────────────────────
+  - pattern: kafka.controller<type=KafkaController, name=ActiveControllerCount><>Value
+    name: kafka_controller_active_controller_count
+    type: GAUGE
+
+  - pattern: kafka.controller<type=KafkaController, name=OfflinePartitionsCount><>Value
+    name: kafka_controller_offline_partitions_count
+    type: GAUGE
+
+  # ── JVM ──────────────────────────────────────────────────────
+  - pattern: java.lang<type=Memory><HeapMemoryUsage>used
+    name: kafka_jvm_heap_used_bytes
+    type: GAUGE
+
+  - pattern: java.lang<type=Memory><HeapMemoryUsage>max
+    name: kafka_jvm_heap_max_bytes
+    type: GAUGE
+
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionCount
+    name: kafka_jvm_gc_collection_count
+    labels:
+      gc: "$1"
+    type: COUNTER
+
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionTime
+    name: kafka_jvm_gc_collection_time_ms
+    labels:
+      gc: "$1"
+    type: COUNTER

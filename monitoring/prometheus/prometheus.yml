@@ -1,0 +1,136 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: "nyc-taxi-bigdata"
+
+rule_files:
+  - "/etc/prometheus/alerts/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [] # alertmanager removed (demo mode)
+
+scrape_configs:
+  # ── Prometheus self ────────────────────────────────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ── Kafka JMX Exporter ────────────────────────────────────
+  - job_name: "kafka"
+    static_configs:
+      - targets: ["kafka:7071"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: "kafka-broker-1"
+
+  # ── Kafka Consumer Lag ────────────────────────────────────
+  - job_name: "kafka-consumer-lag"
+    static_configs:
+      - targets: ["kafka-lag-exporter:8000"]
+
+  # ── Zookeeper (blackbox tcp) ───────────────────────────────
+  - job_name: "zookeeper"
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets: ["zookeeper:2181"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # ── Spark Master ──────────────────────────────────────────
+  - job_name: "spark-master"
+    metrics_path: "/metrics/master/prometheus/"
+    static_configs:
+      - targets: ["spark-master:8080"]
+
+  # ── Spark Worker ──────────────────────────────────────────
+  - job_name: "spark-worker"
+    metrics_path: "/metrics/worker/prometheus/"
+    static_configs:
+      - targets: ["spark-worker:8081"]
+
+  # ── Spark Driver ──────────────────────────────────────────
+  - job_name: "spark-driver-metrics"
+    metrics_path: "/metrics/driver/prometheus/"
+    static_configs:
+      - targets: ["spark-master:4040"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: spark_role
+        replacement: "driver"
+
+  # ── MinIO ─────────────────────────────────────────────────
+  - job_name: "minio"
+    metrics_path: "/minio/v2/metrics/cluster"
+    static_configs:
+      - targets: ["minio:9000"]
+
+  # ── Airflow (StatsD → Prometheus) ─────────────────────────
+  - job_name: "airflow"
+    static_configs:
+      - targets: ["airflow-statsd-exporter:9102"]
+
+  # ── MLflow (blackbox http) ────────────────────────────────
+  - job_name: "mlflow-health"
+    metrics_path: "/probe"
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - "http://mlflow:5000/health"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # ── PostgreSQL (blackbox tcp) ─────────────────────────────
+  - job_name: "postgres"
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets: ["postgres:5432"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # ── Grafana ───────────────────────────────────────────────
+  - job_name: "grafana"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["grafana:3000"]
+
+  # ── cAdvisor ─────────────────────────────────────────────
+  - job_name: "cadvisor"
+    static_configs:
+      - targets: ["cadvisor:8080"]
+    metric_relabel_configs:
+      - source_labels: [container_label_com_docker_compose_service]
+        regex: "kafka|spark-master|spark-worker|airflow|minio|mlflow|zookeeper|request-producer|pickup-producer|dropoff-producer|postgres"
+        action: keep
+
+  # ── Node Exporter ─────────────────────────────────────────
+  - job_name: "node-exporter"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: "master-node"

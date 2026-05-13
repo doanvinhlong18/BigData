@@ -1,46 +1,67 @@
 """
 spark/jobs/silver_to_gold.py
-──────────────────────────────
-Silver complete → Gold aggregated
+─────────────────────────────
+Silver/complete + Silver/response → Gold/aggregated
 
-Gold schema (grain: zone_id × window_end):
-  Demand, Pickup, Dropoff, Stats, Neighbor, Weather (10 cols)
+Nguồn đọc (2 bảng):
+  silver/complete  (stream trigger) → demand + dropoff + trip stats
+  silver/response  (batch read)     → pickup_delay_mean/std, pickup_60m
 
-Lý do lưu weather vào Gold:
-  - Window + join (shuffle-heavy) → lưu để tránh tính lại
-  - Weather join là lookup nhỏ (263 rows) → cùng lúc, không tốn thêm
-  - Predict DAG chỉ đọc Gold, không cần đọc CSV riêng
-  - Lag weather suy ra từ Gold history (rẻ, no shuffle)
-  - Lead weather (T+15, T+30, T+45) → đọc silver/weather 3 rows, inject nhỏ
+Tách pickup_delay sang silver/response vì:
+  - delay = pickup_datetime - request_datetime là chỉ số của giai đoạn response
+    (request đã được đón), không nên bị lọc bởi điều kiện complete (phải có dropoff)
+  - Dùng silver/response giúp tính delay trên toàn bộ trips đã pickup,
+    kể cả những trip chưa kết thúc (chưa có dropoff)
 
-KHÔNG lưu trong Gold (suy ra khi cần, rẻ):
-  - imbalance          = pickup_delay_mean^1.2 × requests_60m
-  - temporal features  = suy ra từ window_end (sin/cos)
-  - lag features       = shift() trên 263×N pandas rows
+Sliding window 60 phút, slide 15 phút.
+Grain: (zone_id, window_end)
+Upsert (MERGE) vì cùng window_end được tính lại khi late data đến.
+
+Metrics:
+  Từ silver/complete (via batch_df):
+    - demand:  requests_60m, requests_15m, wav_requests, aar_requests,
+               shared_requests, uber_requests    ← window request_datetime
+    - dropoff: dropoff_60m, matched_rd           ← window dropoff_datetime
+    - trip:    avg_fare, avg_distance, avg_driver_pay, avg_tips
+  Từ silver/response (batch read, lọc theo window_end range):
+    - pickup:  pickup_60m, pickup_delay_mean, pickup_delay_std, matched_rp
+  Tổng hợp:
+    - neighbor: neighbor_requests_60m, neighbor_avg_requests_60m
+
+ZONE_NEIGHBORS: dict hardcode 263 zones NYC.
 """
 
-import os, logging, math
-from datetime import datetime, timedelta, timezone
-import pyspark.sql.functions as F
-from pyspark.sql import SparkSession
-from pyspark.sql.types import IntegerType, StructType, StructField, TimestampType
-from delta.tables import DeltaTable
+import json
+import os
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("silver_to_gold")
+import pandas as pd
+from delta.tables import DeltaTable
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.functions import (
+    avg,
+    coalesce,
+    col,
+    count,
+    lit,
+    stddev,
+    sum as spark_sum,
+    when,
+    window,
+)
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
-MINIO_ACCESS = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-SILVER_REQUEST = os.getenv("SILVER_REQUEST", "s3a://silver/request")
-SILVER_COMPLETE = os.getenv("SILVER_COMPLETE", "s3a://silver/complete")
-# Weather không lưu vào Gold — join trong Airflow từ CSV khi predict/retrain
-GOLD_AGGREGATED = os.getenv("GOLD_AGGREGATED", "s3a://gold/aggregated")
-CHECKPOINT_DIR = os.getenv("CHECKPOINT_DIR", "s3a://checkpoints/silver_to_gold")
+SILVER_COMPLETE = "s3a://silver/complete"
+SILVER_RESPONSE = "s3a://silver/response"  # dùng để tính pickup_delay
+GOLD_AGG = "s3a://gold/aggregated"
+CHECKPOINT = "s3a://checkpoints/gold/aggregated"
 
-WINDOW_SECONDS = 60 * 60
-SLIDE_SECONDS = 15 * 60
-WATERMARK_MIN = 15
+WINDOW_DURATION = "60 minutes"
+SLIDE_DURATION = "15 minutes"
+WATERMARK = "15 minutes"
+TRIGGER_INTERVAL = "15 seconds"
 
 ZONE_NEIGHBORS = {
     1: [2, 3, 4],
@@ -308,370 +329,276 @@ ZONE_NEIGHBORS = {
     263: [],
 }
 
+NEIGHBOR_JSON = json.dumps(ZONE_NEIGHBORS)
 
-def create_spark():
-    return (
-        SparkSession.builder.appName("silver-to-gold")
+
+def main():
+    spark = (
+        SparkSession.builder.appName("silver_to_gold")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config(
             "spark.sql.catalog.spark_catalog",
             "org.apache.spark.sql.delta.catalog.DeltaCatalog",
         )
         .config("spark.hadoop.fs.s3a.endpoint", MINIO_ENDPOINT)
-        .config("spark.hadoop.fs.s3a.access.key", MINIO_ACCESS)
+        .config("spark.hadoop.fs.s3a.access.key", MINIO_KEY)
         .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.sql.shuffle.partitions", "8")
-        .config("spark.streaming.backpressure.enabled", "true")
         .getOrCreate()
     )
+    spark.sparkContext.setLogLevel("WARN")
 
+    # ── Source: Silver/complete stream ────────────────────────────────────────
+    # Watermark trên dropoff_datetime (event muộn nhất, luôn có) để drive window
+    complete_stream = (
+        spark.readStream.format("delta")
+        .load(SILVER_COMPLETE)
+        .withWatermark("dropoff_datetime", WATERMARK)
+    )
 
-def flag(c):
-    return F.when(F.col(c) == "Y", 1).otherwise(0)
+    def aggregate_and_upsert(batch_df, batch_id):
+        if batch_df.isEmpty():
+            return
 
+        spark.sparkContext.broadcast(NEIGHBOR_JSON)
 
-def is_uber():
-    return F.when(F.col("hvfhs_license_num") == "HV0003", 1).otherwise(0)
+        # ── 1. DEMAND metrics — groupBy PULocationID + window request_datetime ─
+        demand_60m = (
+            batch_df.filter("PULocationID >= 1 AND PULocationID <= 263")
+            .groupBy(
+                col("PULocationID").alias("zone_id"),
+                window("request_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+            )
+            .agg(
+                count("*").alias("requests_60m"),
+                count(
+                    when(
+                        col("request_datetime")
+                        >= F.col("w.end") - F.expr("INTERVAL 15 MINUTES"),
+                        True,
+                    )
+                ).alias("requests_15m"),
+                count(when(col("wav_request_flag") == "Y", True)).alias("wav_requests"),
+                count(when(col("access_a_ride_flag") == "Y", True)).alias(
+                    "aar_requests"
+                ),
+                count(when(col("shared_request_flag") == "Y", True)).alias(
+                    "shared_requests"
+                ),
+                count(when(col("hvfhs_license_num") == "HV0003", True)).alias(
+                    "uber_requests"
+                ),
+            )
+            .select(
+                col("zone_id"),
+                col("w.end").alias("window_end"),
+                "requests_60m",
+                "requests_15m",
+                "wav_requests",
+                "aar_requests",
+                "shared_requests",
+                "uber_requests",
+            )
+        )
 
+        # ── 2. PICKUP metrics — batch-read silver/response ────────────────────
+        # pickup_delay = pickup_datetime - request_datetime là chỉ số của giai
+        # đoạn response (request đã được đón), không phải complete (đã dropoff).
+        # Đọc từ silver/response để tính delay trên TẤT CẢ trips đã pickup,
+        # kể cả trip chưa có dropoff — tránh bias selection chỉ trip hoàn chỉnh.
+        we_rows = demand_60m.select("window_end").distinct().collect()
+        if not we_rows:
+            return
+        min_we = min(r["window_end"] for r in we_rows)
+        max_we = max(r["window_end"] for r in we_rows)
 
-def sliding(ts):
-    return F.window(F.col(ts), f"{WINDOW_SECONDS} seconds", f"{SLIDE_SECONDS} seconds")
+        response_df = (
+            spark.read.format("delta")
+            .load(SILVER_RESPONSE)
+            .filter(
+                col("pickup_datetime").isNotNull()
+                & (
+                    col("pickup_datetime")
+                    >= F.lit(min_we) - F.expr("INTERVAL 60 MINUTES")
+                )
+                & (col("pickup_datetime") < F.lit(max_we))
+            )
+        )
 
+        pickup_metrics = (
+            response_df.filter(F.col("pickup_datetime") >= F.col("request_datetime"))
+            .filter("PULocationID >= 1 AND PULocationID <= 263")
+            # precompute delay
+            .withColumn(
+                "pickup_delay",
+                F.col("pickup_datetime").cast("long")
+                - F.col("request_datetime").cast("long"),
+            )
+            .groupBy(
+                col("PULocationID").alias("zone_id"),
+                window("pickup_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+            )
+            .agg(
+                count("*").alias("pickup_60m"),
+                count("trip_id").alias("matched_rp"),
+                avg("pickup_delay").alias("pickup_delay_mean"),
+                F.coalesce(stddev("pickup_delay"), F.lit(0)).alias("pickup_delay_std"),
+            )
+            .select(
+                col("zone_id"),
+                col("w.end").alias("window_end"),
+                "pickup_60m",
+                "pickup_delay_mean",
+                "pickup_delay_std",
+                "matched_rp",
+            )
+        )
 
-def compute_neighbor_features(demand_df, spark):
-    adj_rows = [(z, n) for z, ns in ZONE_NEIGHBORS.items() for n in ns]
-    adj = spark.createDataFrame(
-        adj_rows,
-        schema=StructType(
+        # ── 3. DROPOFF metrics — groupBy DOLocationID + window dropoff_datetime ─
+        dropoff_metrics = (
+            batch_df.filter(col("dropoff_datetime").isNotNull())
+            .filter("DOLocationID >= 1 AND DOLocationID <= 263")
+            .groupBy(
+                col("DOLocationID").alias("zone_id"),
+                window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+            )
+            .agg(
+                count("*").alias("dropoff_60m"),
+                count("trip_id").alias("matched_rd"),
+            )
+            .select(
+                col("zone_id"),
+                col("w.end").alias("window_end"),
+                "dropoff_60m",
+                "matched_rd",
+            )
+        )
+
+        # ── 4. TRIP STATS — groupBy PULocationID + window pickup_datetime ──────
+        trip_stats = (
+            batch_df.filter(
+                col("trip_miles").between(0.1, 200)
+                & col("trip_time").between(60, 86400)
+                & col("base_passenger_fare").isNotNull()
+            )
+            .filter("PULocationID >= 1 AND PULocationID <= 263")
+            .groupBy(
+                col("PULocationID").alias("zone_id"),
+                window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+            )
+            .agg(
+                avg("base_passenger_fare").alias("avg_fare"),
+                avg("trip_miles").alias("avg_distance"),
+                avg("driver_pay").alias("avg_driver_pay"),
+                avg("tips").alias("avg_tips"),
+            )
+            .select(
+                col("zone_id"),
+                col("w.end").alias("window_end"),
+                "avg_fare",
+                "avg_distance",
+                "avg_driver_pay",
+                "avg_tips",
+            )
+        )
+
+        # ── 5. Merge all metrics ──────────────────────────────────────────────
+        gold = (
+            demand_60m.join(pickup_metrics, on=["zone_id", "window_end"], how="left")
+            .join(dropoff_metrics, on=["zone_id", "window_end"], how="left")
+            .join(trip_stats, on=["zone_id", "window_end"], how="left")
+        )
+
+        from pyspark.sql import functions as F
+        from pyspark.sql.types import StructType, StructField, IntegerType
+
+        # ── Build adjacency DataFrame ────────────────────────────────────────
+        neighbor_map = json.loads(NEIGHBOR_JSON)
+
+        adj_rows = [
+            (int(zone), int(n))
+            for zone, neighbors in neighbor_map.items()
+            for n in neighbors
+        ]
+
+        adj_schema = StructType(
             [
                 StructField("zone_id", IntegerType(), False),
-                StructField("nbr_id", IntegerType(), False),
+                StructField("neighbor_zone_id", IntegerType(), False),
             ]
-        ),
-    )
-    focal = demand_df.join(adj, "zone_id", "left").select(
-        demand_df["zone_id"].alias("fz"), F.col("nbr_id"), demand_df["window_end"]
-    )
-    return (
-        focal.join(
-            demand_df.alias("n"),
-            (focal["nbr_id"] == F.col("n.zone_id"))
-            & (focal["window_end"] == F.col("n.window_end")),
-            "left",
-        )
-        .groupBy("fz", focal["window_end"])
-        .agg(
-            F.sum("n.requests_60m").alias("neighbor_requests_60m"),
-            F.sum("n.requests_15m").alias("neighbor_requests_15m"),
-            F.avg("n.pickup_delay_mean").alias("neighbor_pickup_delay_mean"),
-            F.count("nbr_id").alias("num_neighbors"),
-        )
-        .withColumnRenamed("fz", "zone_id")
-    )
-
-
-def build_gold_for_windows(spark, window_ends):
-    if not window_ends:
-        return None
-    min_we = min(window_ends)
-    max_we = max(window_ends)
-    read_from = min_we - timedelta(seconds=WINDOW_SECONDS + 1800)
-
-    # ── Demand: đọc silver/REQUEST ─────────────────────────────────────────────
-    # Lý do: requests_60m phải đếm TẤT CẢ request trong window,
-    # kể cả trips đang chờ xe hoặc đang đi (chưa dropoff, chưa có trong complete).
-    # silver/complete chỉ có trips đã hoàn thành → bỏ sót nhu cầu thực đang xảy ra.
-    all_requests = (
-        spark.read.format("delta")
-        .load(SILVER_REQUEST)
-        .filter(F.col("request_datetime") >= F.lit(read_from))
-    )
-
-    SLIDE_EXPR = F.expr(f"INTERVAL {SLIDE_SECONDS} SECONDS")
-
-    def in_range(df):
-        return df.filter(
-            (F.col("zone_id") <= 263)
-            & (F.col("window_end") >= F.lit(min_we))
-            & (F.col("window_end") <= F.lit(max_we))
         )
 
-    demand = in_range(
-        all_requests.withColumn("zone_id", F.col("PULocationID").cast("int"))
-        .withColumn("w", sliding("request_datetime"))
-        .groupBy("zone_id", "w")
-        .agg(
-            F.count("*").alias("requests_60m"),
-            F.sum(
-                F.when(
-                    F.col("request_datetime") >= F.col("w.end") - SLIDE_EXPR, 1
-                ).otherwise(0)
-            ).alias("requests_15m"),
-            F.sum(flag("wav_request_flag")).alias("wav_req"),
-            F.sum(flag("access_a_ride_flag")).alias("aar_req"),
-            F.sum(flag("shared_request_flag")).alias("share_req"),
-            F.sum(is_uber()).alias("uber_req"),
-        )
-        .withColumn("window_end", F.col("w.end"))
-        .drop("w")
-    )
+        adj_df = spark.createDataFrame(adj_rows, adj_schema)
 
-    # ── Pickup / Dropoff / Stats: đọc silver/COMPLETE ─────────────────────────
-    # Cần pickup_datetime và financials — chỉ có sau khi join request + response.
-    raw = (
-        spark.read.format("delta")
-        .load(SILVER_COMPLETE)
-        .filter(
-            (F.col("request_datetime") >= F.lit(read_from))
-            | (F.col("pickup_datetime") >= F.lit(read_from))
-            | (F.col("dropoff_datetime") >= F.lit(read_from))
-        )
-    )
+        # (optional nhưng nên dùng vì nhỏ)
+        adj_df = F.broadcast(adj_df)
 
-    trips = raw.filter(
-        (F.col("base_passenger_fare") > 0)
-        & (F.col("driver_pay") > 0)
-        & (F.col("trip_miles") < 500)
-        & (F.col("trip_time") < 20000)
-        & (F.col("driver_pay") < 1500)
-        & (F.col("pickup_datetime") > F.col("request_datetime"))
-    )
-
-    trips_valid = trips.filter(
-        F.col("trip_miles").between(0.3, 500)
-        & F.col("trip_time").between(200, 20000)
-        & F.col("base_passenger_fare").between(1, 1500)
-        & F.col("driver_pay").between(1, 1500)
-    )
-
-    pickup = in_range(
-        trips.withColumn("zone_id", F.col("PULocationID").cast("int"))
-        .withColumn("w", sliding("pickup_datetime"))
-        .withColumn(
-            "pickup_delay_s",
-            F.unix_timestamp("pickup_datetime") - F.unix_timestamp("request_datetime"),
-        )
-        .groupBy("zone_id", "w")
-        .agg(
-            F.count("*").alias("pickup_60m"),
-            F.sum(
-                F.when(
-                    F.col("pickup_datetime") >= F.col("w.end") - SLIDE_EXPR, 1
-                ).otherwise(0)
-            ).alias("pickup_15m"),
-            F.mean("pickup_delay_s").alias("pickup_delay_mean"),
-            F.stddev("pickup_delay_s").alias("pickup_delay_std"),
-            F.sum(
-                F.when(F.col("request_datetime") >= F.col("w.start"), 1).otherwise(0)
-            ).alias("matched_rp"),
-            F.sum(
-                F.when(
-                    (F.col("request_datetime") >= F.col("w.start"))
-                    & (F.col("pickup_datetime") >= F.col("w.end") - SLIDE_EXPR),
-                    1,
-                ).otherwise(0)
-            ).alias("matched_rp_15m"),
-            F.sum(flag("wav_match_flag")).alias("wav_match"),
-            F.sum(flag("shared_match_flag")).alias("share_match"),
-        )
-        .withColumn("window_end", F.col("w.end"))
-        .drop("w")
-    )
-
-    dc = in_range(
-        trips.withColumn("zone_id", F.col("DOLocationID").cast("int"))
-        .withColumn("w", sliding("dropoff_datetime"))
-        .groupBy("zone_id", "w")
-        .agg(
-            F.count("*").alias("dropoff_60m"),
-            F.sum(
-                F.when(
-                    F.col("dropoff_datetime") >= F.col("w.end") - SLIDE_EXPR, 1
-                ).otherwise(0)
-            ).alias("dropoff_15m"),
-            F.sum(
-                F.when(F.col("request_datetime") >= F.col("w.start"), 1).otherwise(0)
-            ).alias("matched_rd"),
-        )
-        .withColumn("window_end", F.col("w.end"))
-        .drop("w")
-    )
-
-    ds = in_range(
-        trips_valid.withColumn("zone_id", F.col("PULocationID").cast("int"))
-        .withColumn("w", sliding("dropoff_datetime"))
-        .groupBy("zone_id", "w")
-        .agg(
-            F.mean("trip_time").alias("avg_trip_time"),
-            F.mean("base_passenger_fare").alias("avg_fare"),
-            F.mean("driver_pay").alias("avg_driver_pay"),
-            F.mean("tips").alias("avg_tips"),
-            F.mean("bcf").alias("avg_bcf"),
-            F.mean("tolls").alias("avg_tolls"),
-            F.mean("congestion_surcharge").alias("avg_congestion_surcharge"),
-            F.mean("airport_fee").alias("avg_airport_fee"),
-            F.mean("sales_tax").alias("avg_sales_tax"),
-            F.mean("cbd_congestion_fee").alias("avg_cbd_congestion_fee"),
-            F.mean("trip_miles").alias("avg_distance"),
-        )
-        .withColumn("window_end", F.col("w.end"))
-        .drop("w")
-    )
-
-    # full_grid
-    zdf = spark.createDataFrame([(z,) for z in range(1, 264)], ["zone_id"])
-    tdf = spark.createDataFrame(
-        [(we,) for we in window_ends], ["window_end"]
-    ).withColumn("window_end", F.col("window_end").cast(TimestampType()))
-    fg = zdf.crossJoin(tdf)
-
-    gold = (
-        fg.join(demand, ["zone_id", "window_end"], "left")
-        .join(pickup, ["zone_id", "window_end"], "left")
-        .join(
-            dc.withColumnRenamed("zone_id", "_dz"),
-            (fg["zone_id"] == F.col("_dz")) & (fg["window_end"] == dc["window_end"]),
-            "left",
-        )
-        .drop("_dz", dc["window_end"])
-        .join(ds, ["zone_id", "window_end"], "left")
-    )
-
-    COUNT_COLS = [
-        "requests_60m",
-        "requests_15m",
-        "pickup_60m",
-        "pickup_15m",
-        "dropoff_60m",
-        "dropoff_15m",
-        "matched_rp",
-        "matched_rp_15m",
-        "matched_rd",
-        "wav_req",
-        "aar_req",
-        "share_req",
-        "uber_req",
-        "wav_match",
-        "share_match",
-    ]
-    gold = gold.fillna(0, subset=[c for c in COUNT_COLS if c in gold.columns])
-
-    # Neighbor features
-    nbr = compute_neighbor_features(
-        gold.select(
-            "zone_id", "window_end", "requests_60m", "requests_15m", "pickup_delay_mean"
-        ),
-        spark,
-    )
-    gold = gold.join(nbr, ["zone_id", "window_end"], "left")
-
-    # Weather không lưu vào Gold — join trong Airflow từ CSV khi predict/retrain
-
-    # Partition
-    gold = (
-        gold.withColumn("year", F.year("window_end"))
-        .withColumn("month", F.month("window_end"))
-        .withColumn("day", F.dayofmonth("window_end"))
-    )
-    return gold
-
-
-def merge_into_gold(spark, batch):
-    if DeltaTable.isDeltaTable(spark, GOLD_AGGREGATED):
-        (
-            DeltaTable.forPath(spark, GOLD_AGGREGATED)
-            .alias("e")
-            .merge(
-                batch.alias("n"), "e.zone_id=n.zone_id AND e.window_end=n.window_end"
+        # ── Compute neighbor demand ──────────────────────────────────────────
+        neighbor_feat = (
+            demand_60m.alias("d")
+            .join(adj_df.alias("a"), F.col("d.zone_id") == F.col("a.zone_id"), "left")
+            .join(
+                demand_60m.alias("n"),
+                (F.col("a.neighbor_zone_id") == F.col("n.zone_id"))
+                & (F.col("d.window_end") == F.col("n.window_end")),
+                "left",
             )
-            .whenMatchedUpdateAll()
-            .whenNotMatchedInsertAll()
-            .execute()
+            .groupBy("d.zone_id", "d.window_end")
+            .agg(
+                F.sum("n.requests_60m").alias("neighbor_requests_60m"),
+                F.count("n.zone_id").alias("neighbor_count"),
+            )
         )
-    else:
-        batch.write.format("delta").partitionBy("year", "month", "day").mode(
-            "overwrite"
-        ).save(GOLD_AGGREGATED)
 
+        # ── Join vào gold ───────────────────────────────────────────────────
+        gold = gold.join(neighbor_feat, ["zone_id", "window_end"], "left")
 
-def process_batch(micro_df, batch_id, spark):
-    if micro_df.isEmpty():
-        return
-    max_ts = micro_df.select(
-        F.greatest(
-            F.max("request_datetime"),
-            F.max("pickup_datetime"),
-            F.max("dropoff_datetime"),
-        ).alias("m")
-    ).first()["m"]
-    if not max_ts:
-        return
-    if hasattr(max_ts, "astimezone"):
-        max_ts = max_ts.astimezone(timezone.utc).replace(tzinfo=None)
-    wc = max_ts - timedelta(minutes=WATERMARK_MIN)
-    ep = (wc - datetime(1970, 1, 1)).total_seconds()
-    max_we = datetime.utcfromtimestamp(int(ep // SLIDE_SECONDS) * SLIDE_SECONDS)
-    try:
-        r = (
-            spark.read.format("delta")
-            .load(GOLD_AGGREGATED)
-            .agg(F.max("window_end"))
-            .first()
+        # ── Fill + compute avg đúng ─────────────────────────────────────────
+        gold = gold.withColumn(
+            "neighbor_requests_60m",
+            F.coalesce(F.col("neighbor_requests_60m"), F.lit(0.0)),
         )
-        last_we = r[0]
-        if last_we and hasattr(last_we, "astimezone"):
-            last_we = last_we.astimezone(timezone.utc).replace(tzinfo=None)
-    except:
-        last_we = None
-    if last_we:
-        start_we = last_we + timedelta(seconds=SLIDE_SECONDS)
-    else:
-        min_ts = micro_df.select(
-            F.least(
-                F.min("request_datetime"),
-                F.min("pickup_datetime"),
-                F.min("dropoff_datetime"),
-            ).alias("m")
-        ).first()["m"]
-        if hasattr(min_ts, "astimezone"):
-            min_ts = min_ts.astimezone(timezone.utc).replace(tzinfo=None)
-        ep2 = (min_ts - datetime(1970, 1, 1)).total_seconds()
-        start_we = datetime.utcfromtimestamp(
-            int(ep2 // SLIDE_SECONDS) * SLIDE_SECONDS + SLIDE_SECONDS
+
+        gold = gold.withColumn(
+            "neighbor_count", F.coalesce(F.col("neighbor_count"), F.lit(0))
         )
-    if start_we > max_we:
-        return
-    wes = []
-    we = start_we
-    while we <= max_we:
-        wes.append(we)
-        we += timedelta(seconds=SLIDE_SECONDS)
-    log.info(f"Batch {batch_id}: {len(wes)} windows {wes[0]} → {wes[-1]}")
-    for i in range(0, len(wes), 8):
-        gb = build_gold_for_windows(spark, wes[i : i + 8])
-        if gb and not gb.rdd.isEmpty():
-            merge_into_gold(spark, gb)
-            log.info(f"  Chunk {i//8+1} merged")
 
+        gold = gold.withColumn(
+            "neighbor_avg_requests_60m",
+            F.when(
+                F.col("neighbor_count") > 0,
+                F.col("neighbor_requests_60m") / F.col("neighbor_count"),
+            ).otherwise(0.0),
+        )
+        # ── 7. UPSERT vào gold/aggregated ────────────────────────────────────
+        if gold.isEmpty():
+            return
 
-def main():
-    spark = create_spark()
-    stream = (
-        spark.readStream.format("delta")
-        .option("ignoreChanges", "true")
-        .load(SILVER_COMPLETE)
-        .select("request_datetime", "pickup_datetime", "dropoff_datetime")
-    )
-    # Trigger 15 giây = 1 window event-time (SPEED_FACTOR=60)
-    (
-        stream.writeStream.foreachBatch(lambda df, bid: process_batch(df, bid, spark))
-        .trigger(processingTime="15 seconds")
-        .option("checkpointLocation", CHECKPOINT_DIR)
+        try:
+            dt = DeltaTable.forPath(spark, GOLD_AGG)
+            (
+                dt.alias("old")
+                .merge(
+                    gold.alias("new"),
+                    "old.zone_id = new.zone_id AND old.window_end = new.window_end",
+                )
+                .whenMatchedUpdateAll()
+                .whenNotMatchedInsertAll()
+                .execute()
+            )
+        except Exception:
+            # Bảng chưa tồn tại → tạo mới
+            gold.write.format("delta").mode("overwrite").save(GOLD_AGG)
+
+    # ── Streaming query ───────────────────────────────────────────────────────
+    query = (
+        complete_stream.writeStream.foreachBatch(aggregate_and_upsert)
+        .option("checkpointLocation", CHECKPOINT)
+        .trigger(processingTime=TRIGGER_INTERVAL)
         .start()
-        .awaitTermination()
     )
+    query.awaitTermination()
 
 
 if __name__ == "__main__":

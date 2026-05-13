@@ -1,108 +1,111 @@
 """
 spark/jobs/complete_bronze_to_silver.py
-─────────────────────────────────────────
-Silver request + Bronze response → Silver complete
+────────────────────────────────────────
+Silver/response (stream) ⋈ Bronze/dropoff (stream) → Silver/complete
 
-Source:
-  Stream 1: silver/request       — đã dedup + clean ở request_bronze_to_silver.py
-  Stream 2: bronze/sorted_response_table — raw, filter + dedup inline ở đây
+Thiết kế:
+- Stream–stream join thay vì foreachBatch
+- Có watermark + event-time constraint để tránh state vô hạn
+- Trigger theo dropoff (event cuối lifecycle)
 
-Lý do không dùng silver/response riêng:
-  Chỉ có 2 silver tables: silver/request và silver/complete.
-  Response không cần lưu riêng vì không có downstream nào đọc response
-  độc lập (ngoài join này).
-
-Watermark:
-  Request side: 3 giờ — cần giữ state đủ lâu chờ response đến
-  Response side: 15 phút — response vào gần như lúc nào request cũng đã có
-                            trong state, không cần đợi lâu
-
-Join condition:
-  trip_id khớp + dropoff trong khoảng [request, request + 3h]
+Schema silver/complete:
+  trip_id,
+  request_datetime, pickup_datetime, on_scene_datetime, dropoff_datetime,
+  PULocationID, confirmed_PU, DOLocationID,
+  hvfhs_license_num, dispatching_base_num, originating_base_num,
+  wav_request_flag, access_a_ride_flag, shared_request_flag,
+  trip_miles, trip_time,
+  base_passenger_fare, driver_pay, tips, tolls, bcf,
+  sales_tax, congestion_surcharge, airport_fee, cbd_congestion_fee,
+  shared_match_flag, wav_match_flag
 """
 
-import os, logging
+import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    col,
-    expr,
-    current_timestamp,
-    to_timestamp,
-    year,
-    month,
-    dayofmonth,
-)
+from pyspark.sql.functions import col, to_timestamp, expr
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("complete_bronze_to_silver")
+# ── ENV ─────────────────────────────────────────────
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
+MINIO_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+
+BRONZE_DROPOFF = "s3a://bronze/dropoff"
+SILVER_RESPONSE = "s3a://silver/response"
+SILVER_COMPLETE = "s3a://silver/complete"
+CHECKPOINT = "s3a://checkpoints/silver/complete"
+
+# ── WATERMARK CONFIG ───────────────────────────────
+RESPONSE_WATERMARK = "24 hours"
+DROPOFF_WATERMARK = "15 minutes"
 
 
-def get_spark():
-    ep = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
-    ak = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-    sk = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-    return (
-        SparkSession.builder.appName("complete-bronze-to-silver")
+# ── MAIN ──────────────────────────────────────────
+def main():
+    spark = (
+        SparkSession.builder.appName("complete_silver_stream_join")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config(
             "spark.sql.catalog.spark_catalog",
             "org.apache.spark.sql.delta.catalog.DeltaCatalog",
         )
-        .config("spark.hadoop.fs.s3a.endpoint", ep)
-        .config("spark.hadoop.fs.s3a.access.key", ak)
-        .config("spark.hadoop.fs.s3a.secret.key", sk)
+        # S3 / MinIO
+        .config("spark.hadoop.fs.s3a.endpoint", MINIO_ENDPOINT)
+        .config("spark.hadoop.fs.s3a.access.key", MINIO_KEY)
+        .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         .getOrCreate()
     )
 
+    spark.sparkContext.setLogLevel("WARN")
 
-def run(spark):
-    # Stream 1: Silver request — đã dedup + clean
-    # Watermark 3h: giữ state request đủ lâu chờ response đến (chuyến xa nhất ~2h)
-    req = (
+    # ───────────────────────────────────────────────
+    # Stream: Silver/response
+    # ───────────────────────────────────────────────
+    response_stream = (
         spark.readStream.format("delta")
-        .option("ignoreChanges", "true")
-        .load("s3a://silver/request")
-        .withWatermark("request_datetime", "3 hours")
+        .load(SILVER_RESPONSE)
+        .withColumn("pickup_datetime", to_timestamp(col("pickup_datetime")))
+        .withColumn("request_datetime", to_timestamp(col("request_datetime")))
+        .withColumn("on_scene_datetime", to_timestamp(col("on_scene_datetime")))
+        .withWatermark("pickup_datetime", RESPONSE_WATERMARK)
+        .filter(col("trip_id").isNotNull())
         .select(
             "trip_id",
+            "request_datetime",
+            "pickup_datetime",
+            "on_scene_datetime",
+            "PULocationID",
+            "confirmed_PU",
+            col("DOLocationID").alias("req_DOLocationID"),
             "hvfhs_license_num",
             "dispatching_base_num",
             "originating_base_num",
-            "PULocationID",
-            "DOLocationID",
-            "request_datetime",
             "wav_request_flag",
             "access_a_ride_flag",
             "shared_request_flag",
-            "year",
-            "month",
-            "day",
         )
     )
 
-    # Stream 2: Bronze response — chưa clean, xử lý inline
-    # Watermark 15 phút: request luôn đến trước, response vào là khớp ngay
-    # dropDuplicatesWithinWatermark: phòng producer retry gửi trùng
-    res = (
+    # ───────────────────────────────────────────────
+    # Stream: Bronze/dropoff
+    # ───────────────────────────────────────────────
+    dropoff_stream = (
         spark.readStream.format("delta")
-        .option("ignoreChanges", "true")
-        .load("s3a://bronze/sorted_response_table")
+        .load(BRONZE_DROPOFF)
+        .withColumn("dropoff_datetime", to_timestamp(col("dropoff_datetime")))
+        .withWatermark("dropoff_datetime", DROPOFF_WATERMARK)
         .filter(
             col("trip_id").isNotNull()
             & col("dropoff_datetime").isNotNull()
-            & col("pickup_datetime").isNotNull()
-            & (col("pickup_datetime") < col("dropoff_datetime"))
+            & col("trip_miles").between(0, 200)
+            & col("trip_time").between(0, 86400)
         )
-        .withWatermark("dropoff_datetime", "15 minutes")
-        .dropDuplicatesWithinWatermark(["trip_id"])
+        .dropDuplicates(["trip_id"])
         .select(
             "trip_id",
             "dropoff_datetime",
-            "pickup_datetime",
-            "on_scene_datetime",
+            "DOLocationID",
             "trip_miles",
             "trip_time",
             "base_passenger_fare",
@@ -119,65 +122,70 @@ def run(spark):
         )
     )
 
-    # Stream-stream join: trip_id + time constraint
-    # Request state (3h) đảm bảo Spark giữ đủ lâu để response kịp khớp
-    complete = (
-        req.alias("req")
-        .join(
-            res.alias("res"),
-            expr("""
-                req.trip_id = res.trip_id
-                AND res.dropoff_datetime >= req.request_datetime
-                AND res.dropoff_datetime <= req.request_datetime + INTERVAL 3 HOURS
-            """),
-            "inner",
-        )
-        .select(
-            col("req.trip_id"),
-            col("req.hvfhs_license_num"),
-            col("req.dispatching_base_num"),
-            col("req.originating_base_num"),
-            col("req.PULocationID"),
-            col("req.DOLocationID"),
-            col("req.request_datetime"),
-            col("res.pickup_datetime"),  # từ response — lúc tài xế đón
-            col("res.on_scene_datetime"),
-            col("res.dropoff_datetime"),
-            col("res.trip_miles"),
-            col("res.trip_time"),
-            col("res.base_passenger_fare"),
-            col("res.driver_pay"),
-            col("res.tips"),
-            col("res.tolls"),
-            col("res.bcf"),
-            col("res.sales_tax"),
-            col("res.congestion_surcharge"),
-            col("res.airport_fee"),
-            col("res.cbd_congestion_fee"),
-            col("req.wav_request_flag"),
-            col("req.access_a_ride_flag"),
-            col("req.shared_request_flag"),
-            col("res.shared_match_flag"),
-            col("res.wav_match_flag"),
-            col("req.year"),
-            col("req.month"),
-            col("req.day"),
-            current_timestamp().alias("silver_ingest_time"),
-        )
+    # ───────────────────────────────────────────────
+    # Stream-Stream Join (CRITICAL PART)
+    # ───────────────────────────────────────────────
+    complete_stream = dropoff_stream.join(
+        response_stream,
+        on=[
+            dropoff_stream.trip_id == response_stream.trip_id,
+            # ⚠️ Event-time constraint để giới hạn state
+            dropoff_stream.dropoff_datetime >= response_stream.pickup_datetime,
+            dropoff_stream.dropoff_datetime
+            <= response_stream.pickup_datetime + expr("INTERVAL 2 HOURS"),
+        ],
+        how="inner",
+    ).select(
+        dropoff_stream["trip_id"],
+        # timestamps
+        "request_datetime",
+        "pickup_datetime",
+        "on_scene_datetime",
+        "dropoff_datetime",
+        # locations
+        "PULocationID",
+        "confirmed_PU",
+        dropoff_stream["DOLocationID"],
+        # identity
+        "hvfhs_license_num",
+        "dispatching_base_num",
+        "originating_base_num",
+        # flags
+        "wav_request_flag",
+        "access_a_ride_flag",
+        "shared_request_flag",
+        # trip stats
+        "trip_miles",
+        "trip_time",
+        # financials
+        "base_passenger_fare",
+        "driver_pay",
+        "tips",
+        "tolls",
+        "bcf",
+        "sales_tax",
+        "congestion_surcharge",
+        "airport_fee",
+        "cbd_congestion_fee",
+        # match flags
+        "shared_match_flag",
+        "wav_match_flag",
     )
 
-    (
-        complete.writeStream.format("delta")
+    # ───────────────────────────────────────────────
+    # Write stream
+    # ───────────────────────────────────────────────
+    query = (
+        complete_stream.writeStream.format("delta")
         .outputMode("append")
-        .option("checkpointLocation", "s3a://silver/checkpoints/complete")
-        .partitionBy("year", "month", "day")
-        .trigger(processingTime="30 seconds")
-        .start("s3a://silver/complete")
-        .awaitTermination()
+        .option("checkpointLocation", CHECKPOINT)
+        .trigger(processingTime="5 seconds")
+        .start(SILVER_COMPLETE)
     )
 
+    query.awaitTermination()
 
+
+# ───────────────────────────────────────────────
 if __name__ == "__main__":
-    spark = get_spark()
-    spark.sparkContext.setLogLevel("WARN")
-    run(spark)
+    main()

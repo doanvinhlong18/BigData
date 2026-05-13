@@ -1,32 +1,19 @@
 """
 spark/jobs/taxi_kafka_to_bronze.py
-────────────────────────────────────
-Kafka → Bronze Delta (2 bảng, 2 schema thực sự khác nhau)
+──────────────────────────────────
+Kafka → Bronze (3 bảng Delta):
+  bronze/sorted_request_table   ← event_type == "request"
+  bronze/sorted_pickup_table    ← event_type == "pickup"   (NEW)
+  bronze/sorted_response_table  ← event_type == "dropoff"
 
-sorted_request_table schema:
-  trip_id, hvfhs_license_num, dispatching_base_num, originating_base_num
-  PULocationID, DOLocationID, request_datetime
-  wav_request_flag, access_a_ride_flag, shared_request_flag
-  + audit: ingest_time, kafka_ts, partition, offset
-
-sorted_response_table schema:
-  trip_id
-  dropoff_datetime, pickup_datetime, on_scene_datetime
-  trip_miles, trip_time
-  base_passenger_fare, driver_pay, tips, tolls, bcf
-  sales_tax, congestion_surcharge, airport_fee, cbd_congestion_fee
-  shared_match_flag, wav_match_flag
-  + audit: ingest_time, kafka_ts, partition, offset
-
-Không có null fields kiểu superset — mỗi bảng chỉ lưu đúng những gì nó có.
+Trigger mỗi 2s, partition by year/month/day theo event_time.
 """
 
-import os, logging
-from pyspark.sql import SparkSession, DataFrame
+import os
+from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
     from_json,
-    current_timestamp,
     to_timestamp,
     year,
     month,
@@ -35,192 +22,187 @@ from pyspark.sql.functions import (
 from pyspark.sql.types import (
     StructType,
     StructField,
-    IntegerType,
-    LongType,
-    DoubleType,
     StringType,
+    IntegerType,
+    DoubleType,
+    TimestampType,
 )
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("kafka_to_bronze")
+KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+TOPIC = "nyc_taxi_events"
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
+MINIO_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+CHECKPOINT_BASE = "s3a://checkpoints/bronze"
+BRONZE_REQUEST = "s3a://bronze/request"
+BRONZE_PICKUP = "s3a://bronze/pickup"
+BRONZE_DROPOFF = "s3a://bronze/dropoff"
 
-# Schema chung để parse JSON — superset chỉ dùng khi parse, bỏ ngay sau đó
+# ── Superset schema — union của 3 event types ─────────────────────────────────
 PARSE_SCHEMA = StructType(
     [
-        StructField("event_type", StringType(), True),
-        StructField("trip_id", StringType(), True),
-        StructField("hvfhs_license_num", StringType(), True),
-        StructField("dispatching_base_num", StringType(), True),
-        StructField("originating_base_num", StringType(), True),
-        StructField("PULocationID", IntegerType(), True),
-        StructField("DOLocationID", IntegerType(), True),
-        StructField("request_datetime", StringType(), True),
-        StructField("wav_request_flag", StringType(), True),
-        StructField("access_a_ride_flag", StringType(), True),
-        StructField("shared_request_flag", StringType(), True),
-        StructField("dropoff_datetime", StringType(), True),
-        StructField("pickup_datetime", StringType(), True),
-        StructField("on_scene_datetime", StringType(), True),
-        StructField("trip_miles", DoubleType(), True),
-        StructField("trip_time", LongType(), True),
-        StructField("base_passenger_fare", DoubleType(), True),
-        StructField("driver_pay", DoubleType(), True),
-        StructField("tips", DoubleType(), True),
-        StructField("tolls", DoubleType(), True),
-        StructField("bcf", DoubleType(), True),
-        StructField("sales_tax", DoubleType(), True),
-        StructField("congestion_surcharge", DoubleType(), True),
-        StructField("airport_fee", DoubleType(), True),
-        StructField("cbd_congestion_fee", DoubleType(), True),
-        StructField("shared_match_flag", StringType(), True),
-        StructField("wav_match_flag", StringType(), True),
+        StructField("event_type", StringType()),
+        StructField("event_time", StringType()),
+        # request fields
+        StructField("trip_id", StringType()),
+        StructField("hvfhs_license_num", StringType()),
+        StructField("dispatching_base_num", StringType()),
+        StructField("originating_base_num", StringType()),
+        StructField("PULocationID", IntegerType()),
+        StructField("DOLocationID", IntegerType()),
+        StructField("request_datetime", StringType()),
+        StructField("wav_request_flag", StringType()),
+        StructField("access_a_ride_flag", StringType()),
+        StructField("shared_request_flag", StringType()),
+        # pickup fields
+        StructField("pickup_datetime", StringType()),
+        StructField("on_scene_datetime", StringType()),
+        # dropoff fields
+        StructField("dropoff_datetime", StringType()),
+        StructField("trip_miles", DoubleType()),
+        StructField("trip_time", IntegerType()),
+        StructField("base_passenger_fare", DoubleType()),
+        StructField("driver_pay", DoubleType()),
+        StructField("tips", DoubleType()),
+        StructField("tolls", DoubleType()),
+        StructField("bcf", DoubleType()),
+        StructField("sales_tax", DoubleType()),
+        StructField("congestion_surcharge", DoubleType()),
+        StructField("airport_fee", DoubleType()),
+        StructField("cbd_congestion_fee", DoubleType()),
+        StructField("shared_match_flag", StringType()),
+        StructField("wav_match_flag", StringType()),
     ]
 )
 
-# Chỉ những columns thực sự có trong request
-REQUEST_COLS = [
-    "trip_id",
-    "hvfhs_license_num",
-    "dispatching_base_num",
-    "originating_base_num",
-    "PULocationID",
-    "DOLocationID",
-    "request_datetime",
-    "wav_request_flag",
-    "access_a_ride_flag",
-    "shared_request_flag",
-]
 
-# Chỉ những columns thực sự có trong response
-RESPONSE_COLS = [
-    "trip_id",
-    "dropoff_datetime",
-    "pickup_datetime",
-    "on_scene_datetime",
-    "trip_miles",
-    "trip_time",
-    "base_passenger_fare",
-    "driver_pay",
-    "tips",
-    "tolls",
-    "bcf",
-    "sales_tax",
-    "congestion_surcharge",
-    "airport_fee",
-    "cbd_congestion_fee",
-    "shared_match_flag",
-    "wav_match_flag",
-]
-
-
-def get_spark():
-    ep = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
-    ak = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-    sk = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-    return (
-        SparkSession.builder.appName("kafka-to-bronze")
+def main():
+    spark = (
+        SparkSession.builder.appName("taxi_kafka_to_bronze")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config(
             "spark.sql.catalog.spark_catalog",
             "org.apache.spark.sql.delta.catalog.DeltaCatalog",
         )
-        .config("spark.hadoop.fs.s3a.endpoint", ep)
-        .config("spark.hadoop.fs.s3a.access.key", ak)
-        .config("spark.hadoop.fs.s3a.secret.key", sk)
+        .config("spark.hadoop.fs.s3a.endpoint", MINIO_ENDPOINT)
+        .config("spark.hadoop.fs.s3a.access.key", MINIO_KEY)
+        .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-        .config("spark.hadoop.fs.s3a.fast.upload", "true")
-        .config("delta.autoOptimize.optimizeWrite", "true")
         .getOrCreate()
     )
-
-
-def run(spark):
-    kb = os.getenv("KAFKA_BOOTSTRAP_INTERNAL", "kafka:9092")
-    starting_offsets = os.getenv("KAFKA_STARTING_OFFSETS", "earliest")
+    spark.sparkContext.setLogLevel("WARN")
 
     raw = (
         spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", kb)
-        .option("subscribe", "nyc_taxi_events")
-        .option("startingOffsets", starting_offsets)
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
+        .option("subscribe", TOPIC)
+        .option("startingOffsets", "earliest")
         .option("failOnDataLoss", "false")
-        .option("maxOffsetsPerTrigger", "50000")
         .load()
+        .selectExpr("CAST(value AS STRING) as json_str", "timestamp as kafka_ts")
     )
 
-    parsed = (
-        raw.selectExpr(
-            "CAST(key AS STRING) AS kafka_key",
-            "CAST(value AS STRING) AS json_str",
-            "timestamp AS kafka_ts",
-            "partition",
-            "offset",
-        )
-        .select(
-            from_json(col("json_str"), PARSE_SCHEMA).alias("d"),
-            "kafka_key",
-            "kafka_ts",
-            "partition",
-            "offset",
-        )
-        .select("d.*", "kafka_key", "kafka_ts", "partition", "offset")
-        .filter(col("trip_id").isNotNull())
-        .withColumn("ingest_time", current_timestamp())
-    )
+    parsed = raw.select(
+        from_json(col("json_str"), PARSE_SCHEMA).alias("d"),
+        col("kafka_ts"),
+    ).select("d.*", "kafka_ts")
 
-    def write_batch(batch_df: DataFrame, batch_id: int):
-        batch_df.cache()
+    def write_batch(batch_df, batch_id):
+        if batch_df.isEmpty():
+            return
 
-        # Request: chỉ SELECT đúng request columns, parse request_datetime
-        req = (
-            batch_df.filter(col("event_type") == "request")
-            .select(REQUEST_COLS + ["ingest_time", "kafka_ts", "partition", "offset"])
-            .withColumn("request_datetime", to_timestamp("request_datetime"))
-            .filter(col("request_datetime").isNotNull())
-            .withColumn("year", year("request_datetime"))
-            .withColumn("month", month("request_datetime"))
-            .withColumn("day", dayofmonth("request_datetime"))
+        # ── EVENT_TIME → partition columns ───────────────────────────────────
+        batch_ts = (
+            batch_df.withColumn("_ts", to_timestamp(col("event_time")))
+            .withColumn("year", year(col("_ts")))
+            .withColumn("month", month(col("_ts")))
+            .withColumn("day", dayofmonth(col("_ts")))
         )
 
-        # Response: chỉ SELECT đúng response columns, parse timestamps
-        res = (
-            batch_df.filter(col("event_type") == "response")
-            .select(RESPONSE_COLS + ["ingest_time", "kafka_ts", "partition", "offset"])
-            .withColumn("dropoff_datetime", to_timestamp("dropoff_datetime"))
-            .withColumn("pickup_datetime", to_timestamp("pickup_datetime"))
-            .withColumn("on_scene_datetime", to_timestamp("on_scene_datetime"))
-            .filter(
-                col("dropoff_datetime").isNotNull() & col("pickup_datetime").isNotNull()
-            )
-            .withColumn("year", year("dropoff_datetime"))
-            .withColumn("month", month("dropoff_datetime"))
-            .withColumn("day", dayofmonth("dropoff_datetime"))
+        # ── REQUEST ──────────────────────────────────────────────────────────
+        req = batch_ts.filter(col("event_type") == "request").select(
+            "trip_id",
+            "hvfhs_license_num",
+            "dispatching_base_num",
+            "originating_base_num",
+            "PULocationID",
+            "DOLocationID",
+            to_timestamp(col("request_datetime")).alias("request_datetime"),
+            "wav_request_flag",
+            "access_a_ride_flag",
+            "shared_request_flag",
+            "year",
+            "month",
+            "day",
         )
-
         if not req.isEmpty():
-            req.write.format("delta").mode("append").partitionBy(
-                "year", "month", "day"
-            ).save("s3a://bronze/sorted_request_table")
-        if not res.isEmpty():
-            res.write.format("delta").mode("append").partitionBy(
-                "year", "month", "day"
-            ).save("s3a://bronze/sorted_response_table")
+            (
+                req.write.format("delta")
+                .mode("append")
+                .partitionBy("year", "month", "day")
+                .option("mergeSchema", "true")
+                .save(BRONZE_REQUEST)
+            )
 
-        log.info(f"Batch {batch_id}: req={req.count():,} res={res.count():,}")
-        batch_df.unpersist()
+        # ── PICKUP ───────────────────────────────────────────────────────────
+        pu = batch_ts.filter(col("event_type") == "pickup").select(
+            "trip_id",
+            to_timestamp(col("pickup_datetime")).alias("pickup_datetime"),
+            to_timestamp(col("on_scene_datetime")).alias("on_scene_datetime"),
+            "PULocationID",
+            "year",
+            "month",
+            "day",
+            "shared_match_flag",
+            "wav_match_flag",
+        )
+        if not pu.isEmpty():
+            (
+                pu.write.format("delta")
+                .mode("append")
+                .partitionBy("year", "month", "day")
+                .option("mergeSchema", "true")
+                .save(BRONZE_PICKUP)
+            )
 
-    (
+        # ── DROPOFF ──────────────────────────────────────────────────────────
+        do = batch_ts.filter(col("event_type") == "dropoff").select(
+            "trip_id",
+            to_timestamp(col("dropoff_datetime")).alias("dropoff_datetime"),
+            "DOLocationID",
+            "trip_miles",
+            "trip_time",
+            "base_passenger_fare",
+            "driver_pay",
+            "tips",
+            "tolls",
+            "bcf",
+            "sales_tax",
+            "congestion_surcharge",
+            "airport_fee",
+            "cbd_congestion_fee",
+            "year",
+            "month",
+            "day",
+        )
+        if not do.isEmpty():
+            (
+                do.write.format("delta")
+                .mode("append")
+                .partitionBy("year", "month", "day")
+                .option("mergeSchema", "true")
+                .save(BRONZE_DROPOFF)
+            )
+
+    query = (
         parsed.writeStream.foreachBatch(write_batch)
-        .option("checkpointLocation", "s3a://bronze/checkpoints/taxi_bronze")
+        .option("checkpointLocation", f"{CHECKPOINT_BASE}/kafka_to_bronze")
         .trigger(processingTime="2 seconds")
         .start()
-        .awaitTermination()
     )
+    query.awaitTermination()
 
 
 if __name__ == "__main__":
-    spark = get_spark()
-    spark.sparkContext.setLogLevel("WARN")
-    run(spark)
+    main()

@@ -1,0 +1,21 @@
+groups:
+  - name: pipeline_data_alerts
+    interval: 60s
+    rules:
+      # NOTE: Các alert nyc_taxi_* (gold lag, prediction lag, confidence)
+      # đã bị bỏ vì metrics-api không còn tồn tại (demo mode).
+      # Pipeline health được theo dõi qua:
+      #   - Airflow DAG alerts (airflow.yml)
+      #   - Grafana dashboard đọc trực tiếp từ PostgreSQL
+
+      - alert: AirflowPredictDagStale
+        expr: |
+          airflow_dag_last_run_seconds_ago{dag_id="predict_demand"} > 1200
+          or absent(airflow_dag_last_run_seconds_ago{dag_id="predict_demand"}) == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: pipeline
+        annotations:
+          summary: "predict_demand DAG chưa chạy trong {{ $value }}s"
+          description: "predict_demand schedule là */15 phút — kiểm tra Airflow."
