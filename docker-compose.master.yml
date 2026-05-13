@@ -51,6 +51,7 @@ services:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     restart: unless-stopped
+    mem_limit: 2g   # JVM heap 1G + overhead/metaspace/GC ~600M — buffer tránh OOM kill
     depends_on:
       zookeeper:
         condition: service_healthy
@@ -129,6 +130,7 @@ services:
     image: minio/minio:latest
     container_name: minio
     restart: unless-stopped
+    mem_limit: 1g   # S3-compatible object store — 1G đủ cho workload Delta + parquet
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
@@ -195,12 +197,54 @@ services:
       retries: 5
       start_period: 30s
 
+  # ── SPARK WORKER (SINGLE-MACHINE) ──────────────────────────────
+  # Bật khi chỉ có 1 máy: KHÔNG bật service này nếu đã có máy worker riêng
+  # chạy docker-compose.worker.yml (để tránh đăng ký 2 worker cùng master).
+  #
+  # Phân bổ RAM 16GB (single-machine):
+  #   Kafka ~1.5G | MinIO ~512M | Postgres ~512M | Airflow ~2G
+  #   MLflow ~512M | Prometheus+Grafana ~768M | Producers ~768M
+  #   Spark Master ~1G | spark-worker 5G | OS+overhead ~3G
+  #
+  # Để BẬT: bỏ comment toàn bộ block dưới đây
+  # Để TẮT (khi có máy worker riêng): comment lại hoặc xóa
+  spark-worker:
+    <<: *spark-base
+    container_name: spark-worker-local
+    restart: unless-stopped
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    command: spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      # 5G để còn đủ RAM cho services khác trên cùng máy 16GB
+      SPARK_WORKER_MEMORY: 5g
+      # Đặt theo số core thực — mặc định 4, chỉnh theo máy cụ thể
+      SPARK_WORKER_CORES: 4
+      SPARK_WORKER_WEBUI_PORT: 8082
+      SPARK_DAEMON_MEMORY: 512m
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./spark/jobs:/opt/spark/app/spark/jobs:ro
+      - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+    mem_limit: 6g
+    healthcheck:
+      test: curl -f http://localhost:8082
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   # ── POSTGRES ───────────────────────────────────────────────────
   # Shared cluster cho: Airflow metadata, MLflow experiments, predictions
   postgres:
     image: postgres:16-alpine
     container_name: postgres
     restart: unless-stopped
+    mem_limit: 1g   # shared_buffers 256M + work_mem + overhead — đủ cho 3 databases nhỏ
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -229,72 +273,70 @@ services:
 
   # ── AIRFLOW ────────────────────────────────────────────────────
   airflow:
-    image: apache/airflow:2.8.0-python3.11
-    container_name: airflow
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      # SQLite → PostgreSQL (fix SQLite lock contention)
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
-      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
-      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
-      AIRFLOW__CORE__PARALLELISM: 4
-      AIRFLOW__SCHEDULER__MAX_THREADS: 2
-      AIRFLOW__METRICS__STATSD_ON: "true"
-      AIRFLOW__METRICS__STATSD_HOST: airflow-statsd-exporter
-      AIRFLOW__METRICS__STATSD_PORT: 8125
-      AIRFLOW__METRICS__STATSD_PREFIX: airflow
-      # Network
-      MASTER_IP: ${MASTER_IP}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT_EXTERNAL}
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-      MLFLOW_TRACKING_URI: http://${MASTER_IP}:5000
-      # PostgreSQL — predict_dag ghi predictions vào đây
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      # Weather
-      WEATHER_PARQUET_PATH: s3://weather/parquet
-      WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
-      # Spark / Delta paths
-      SPARK_MASTER_URL: ${SPARK_MASTER_URL}
-      SILVER_WEATHER: s3a://silver/weather
-      SILVER_RESPONSE: s3a://silver/response
-      SILVER_COMPLETE: s3a://silver/complete
-      GOLD_AGGREGATED: s3a://gold/aggregated
-      <<: *minio-env
-    ports:
-      - "8888:8080"
-    volumes:
-      - airflow-data:/opt/airflow
-      - ./airflow/dags:/opt/airflow/dags
-      - ./ml:/opt/airflow/ml
-      - ./spark/jobs:/opt/airflow/spark_jobs
-    command: >
-      bash -c "
-        pip install --quiet deltalake lightgbm scikit-learn pandas pyarrow
-                            requests mlflow holidays boto3 psycopg2-binary &&
-        airflow db migrate &&
-        airflow users create --username admin --password admin
-          --firstname Admin --lastname Admin
-          --role Admin --email admin@bigdata.com 2>/dev/null || true &&
-        airflow webserver &
-        airflow scheduler
-      "
-    healthcheck:
-      test: curl -f http://localhost:8080/health
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
+      # Dùng image custom thay vì apache/airflow gốc
+      build:
+        context: ./airflow
+        dockerfile: Dockerfile
+      image: bigdata-airflow:latest   # cache lại, không build lại mỗi lần up
+      container_name: airflow
+      restart: unless-stopped
+      depends_on:
+        postgres:
+          condition: service_healthy
+      environment:
+        AIRFLOW__CORE__EXECUTOR: LocalExecutor
+        AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+        AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+        AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+        AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+        AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
+        AIRFLOW__CORE__PARALLELISM: 4
+        AIRFLOW__SCHEDULER__MAX_THREADS: 2
+        AIRFLOW__METRICS__STATSD_ON: "true"
+        AIRFLOW__METRICS__STATSD_HOST: airflow-statsd-exporter
+        AIRFLOW__METRICS__STATSD_PORT: 8125
+        AIRFLOW__METRICS__STATSD_PREFIX: airflow
+        MASTER_IP: ${MASTER_IP}
+        MINIO_ENDPOINT: ${MINIO_ENDPOINT_EXTERNAL}
+        MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+        MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+        MLFLOW_TRACKING_URI: http://${MASTER_IP}:5000
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: ${POSTGRES_DB}
+        POSTGRES_USER: ${POSTGRES_USER}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        WEATHER_PARQUET_PATH: s3://weather/parquet
+        WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
+        SPARK_MASTER_URL: ${SPARK_MASTER_URL}
+        SILVER_WEATHER: s3a://silver/weather
+        SILVER_RESPONSE: s3a://silver/response
+        SILVER_COMPLETE: s3a://silver/complete
+        GOLD_AGGREGATED: s3a://gold/aggregated
+        <<: *minio-env
+      ports:
+        - "8888:8080"
+      volumes:
+        - airflow-data:/opt/airflow
+        - ./airflow/dags:/opt/airflow/dags
+        - ./ml:/opt/airflow/ml
+        - ./spark/jobs:/opt/airflow/spark_jobs
+      # Command gọn — không còn pip install
+      command: >
+        bash -c "
+          airflow db migrate &&
+          airflow users create --username admin --password admin
+            --firstname Admin --lastname Admin
+            --role Admin --email admin@bigdata.com 2>/dev/null || true &&
+          airflow webserver &
+          airflow scheduler
+        "
+      healthcheck:
+        test: curl -f http://localhost:8080/health
+        interval: 60s
+        timeout: 10s
+        retries: 3
+        start_period: 60s
 
   # ── AIRFLOW STATSD EXPORTER ────────────────────────────────────
   airflow-statsd-exporter:
@@ -315,6 +357,7 @@ services:
     image: python:3.11-slim
     container_name: mlflow
     restart: unless-stopped
+    mem_limit: 800m   # MLflow server nhẹ; pip install boto3+psycopg2 ~300M tạm thời
     depends_on:
       minio:
         condition: service_healthy
@@ -345,6 +388,7 @@ services:
     image: prom/prometheus:v2.48.0
     container_name: prometheus
     restart: unless-stopped
+    mem_limit: 1g   # TSDB 30d + WAL in-memory index ~400M; 1G buffer
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"

@@ -361,10 +361,10 @@ def main():
         if batch_df.isEmpty():
             return
 
-        spark.sparkContext.broadcast(NEIGHBOR_JSON)
+        # NEIGHBOR_JSON là biến global — dùng trực tiếp, không cần broadcast
 
         # ── 1. DEMAND metrics — groupBy PULocationID + window request_datetime ─
-        demand_60m = (
+        demand_base = (
             batch_df.filter("PULocationID >= 1 AND PULocationID <= 263")
             .groupBy(
                 col("PULocationID").alias("zone_id"),
@@ -372,13 +372,6 @@ def main():
             )
             .agg(
                 count("*").alias("requests_60m"),
-                count(
-                    when(
-                        col("request_datetime")
-                        >= F.col("w.end") - F.expr("INTERVAL 15 MINUTES"),
-                        True,
-                    )
-                ).alias("requests_15m"),
                 count(when(col("wav_request_flag") == "Y", True)).alias("wav_requests"),
                 count(when(col("access_a_ride_flag") == "Y", True)).alias(
                     "aar_requests"
@@ -392,15 +385,36 @@ def main():
             )
             .select(
                 col("zone_id"),
-                col("w.end").alias("window_end"),
+                # col("w").getField("end") an toàn hơn col("w.end") trong mọi Spark 3.x
+                col("w").getField("end").alias("window_end"),
                 "requests_60m",
-                "requests_15m",
                 "wav_requests",
                 "aar_requests",
                 "shared_requests",
                 "uber_requests",
             )
         )
+
+        # requests_15m: tính riêng qua tumbling window 15-min để tránh reference
+        # struct field bên trong agg() của sliding window (gây AnalysisException trên
+        # một số Spark 3.x khi resolver nhầm "w.end" là tên cột thay vì field access).
+        req_15m = (
+            batch_df.filter("PULocationID >= 1 AND PULocationID <= 263")
+            .groupBy(
+                col("PULocationID").alias("zone_id"),
+                window("request_datetime", SLIDE_DURATION).alias("w15"),
+            )
+            .agg(count("*").alias("requests_15m"))
+            .select(
+                col("zone_id"),
+                col("w15").getField("end").alias("window_end"),
+                "requests_15m",
+            )
+        )
+
+        demand_60m = demand_base.join(
+            req_15m, on=["zone_id", "window_end"], how="left"
+        ).fillna(0, subset=["requests_15m"])
 
         # ── 2. PICKUP metrics — batch-read silver/response ────────────────────
         # pickup_delay = pickup_datetime - request_datetime là chỉ số của giai
@@ -447,7 +461,7 @@ def main():
             )
             .select(
                 col("zone_id"),
-                col("w.end").alias("window_end"),
+                col("w").getField("end").alias("window_end"),
                 "pickup_60m",
                 "pickup_delay_mean",
                 "pickup_delay_std",
@@ -469,7 +483,7 @@ def main():
             )
             .select(
                 col("zone_id"),
-                col("w.end").alias("window_end"),
+                col("w").getField("end").alias("window_end"),
                 "dropoff_60m",
                 "matched_rd",
             )
@@ -495,7 +509,7 @@ def main():
             )
             .select(
                 col("zone_id"),
-                col("w.end").alias("window_end"),
+                col("w").getField("end").alias("window_end"),
                 "avg_fare",
                 "avg_distance",
                 "avg_driver_pay",

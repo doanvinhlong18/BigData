@@ -1,19 +1,21 @@
 """
 airflow/dags/predict_dag.py
-Schedule: */15 * * * *
+Schedule: * * * * *  (mỗi 1 phút wall clock)
 
-Hệ thống đang replay lịch sử x60 → mọi logic thời gian dùng
-event_time (window_end từ gold), KHÔNG dùng now()/wall clock.
+Với SPEED_FACTOR=60: 1 phút wall clock = 60 phút event_time.
+Gold table có trigger 15 giây → mỗi phút wall clock có ~4 slot mới.
 
-Thay đổi:
-  - FIX Lỗi 1  : _load_latest_gold dùng get_add_actions() thay vì full scan
-  - FIX Lỗi 4  : predicted_at = window_end (event_time), không dùng now()
-  - WEATHER     : Parquet partitioned date=YYYY-MM-DD, filter theo event_time
-  - OUTPUT      : Upsert vào PostgreSQL, ON CONFLICT DO UPDATE — idempotent
-  - DEMO MODE   : bỏ alert/shadow logic phức tạp
+Giải pháp: mỗi lần DAG chạy, task_predict loop 4 vòng × 15 giây,
+mỗi vòng đọc gold → nếu window_end mới thì predict + ghi PG,
+nếu window_end cũ thì skip. Đảm bảo bắt kịp tất cả slot.
+
+Thay đổi so với phiên bản trước:
+  - schedule_interval: */15 * * * * → * * * * * (mỗi phút)
+  - task_predict: thêm internal loop 4 × 15s
+  - thêm _get_last_predicted_slot(): check PG tránh re-predict slot cũ
 """
 
-import os, sys, logging
+import os, sys, time, logging
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -37,6 +39,7 @@ from feature_builder import (
 
 log = logging.getLogger(__name__)
 
+# ── Config ─────────────────────────────────────────────────────────────────────
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
 MINIO_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
@@ -60,8 +63,13 @@ PG_USER = os.getenv("POSTGRES_USER", "admin")
 PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin123")
 
 SLOT_MINUTES = 15
+# Mỗi DAG run (1 phút wall clock) loop 4 vòng × 15 giây
+# = bắt kịp 4 slot × 15 phút event_time = 60 phút event_time / phút wall clock
+LOOP_COUNT = 4
+LOOP_SLEEP_S = 15
 
 
+# ── PG helpers ─────────────────────────────────────────────────────────────────
 def _pg_conn():
     return psycopg2.connect(
         host=PG_HOST,
@@ -76,14 +84,14 @@ def _pg_conn():
 def _ensure_table():
     ddl = """
     CREATE TABLE IF NOT EXISTS predictions_monitoring (
-        zone_id             INTEGER      NOT NULL,
-        window_end          TIMESTAMPTZ  NOT NULL,
-        predicted_class     SMALLINT     NOT NULL,
-        pred_confidence     REAL         NOT NULL,
-        used_model          VARCHAR(20)  NOT NULL,
-        model_version       VARCHAR(20),
-        predicted_at        TIMESTAMPTZ  NOT NULL,
-        shadow_predicted_class SMALLINT,
+        zone_id                 INTEGER      NOT NULL,
+        window_end              TIMESTAMPTZ  NOT NULL,
+        predicted_class         SMALLINT     NOT NULL,
+        pred_confidence         REAL         NOT NULL,
+        used_model              VARCHAR(20)  NOT NULL,
+        model_version           VARCHAR(20),
+        predicted_at            TIMESTAMPTZ  NOT NULL,
+        shadow_predicted_class  SMALLINT,
         proba_0 REAL, proba_1 REAL, proba_2 REAL,
         proba_3 REAL, proba_4 REAL, proba_5 REAL,
         shadow_proba_0 REAL, shadow_proba_1 REAL, shadow_proba_2 REAL,
@@ -105,12 +113,26 @@ def _ensure_table():
         conn.commit()
 
 
+def _get_last_predicted_slot() -> pd.Timestamp | None:
+    """
+    Lấy window_end lớn nhất đã được predict trong PG.
+    Dùng để skip nếu gold chưa có slot mới hơn.
+    """
+    try:
+        with _pg_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(window_end) FROM predictions_monitoring")
+                row = cur.fetchone()
+        if row and row[0] is not None:
+            ts = pd.Timestamp(row[0])
+            return ts.tz_localize("UTC") if ts.tzinfo is None else ts
+    except Exception as e:
+        log.warning(f"[PG] _get_last_predicted_slot failed: {e}")
+    return None
+
+
+# ── FIX Lỗi 1: đọc Delta stats, không full scan ────────────────────────────────
 def _load_latest_gold():
-    """
-    FIX Lỗi 1: get_add_actions() đọc Delta transaction log JSON (nhỏ),
-    lấy max(window_end) từ file-level stats — O(n_files) không O(n_rows).
-    Sau đó load đúng 3 snapshot qua predicate pushdown.
-    """
     try:
         dt = DeltaTable(GOLD_AGG_PATH, storage_options=STORAGE_OPTS)
         add_actions = dt.get_add_actions(flatten=True).to_pydict()
@@ -121,7 +143,6 @@ def _load_latest_gold():
             latest_we = pd.Timestamp(raw_max)
             if latest_we.tzinfo is None:
                 latest_we = latest_we.tz_localize("UTC")
-            log.info(f"[GOLD] latest_we from Delta stats: {latest_we}")
         else:
             log.warning("[GOLD] Delta stats unavailable, column-scan fallback")
             tmp = dt.to_pandas(columns=["window_end"])
@@ -136,17 +157,14 @@ def _load_latest_gold():
         def snap(we):
             return dt.to_pandas(filters=[("window_end", "=", str(we))])
 
-        cur_df = snap(latest_we)
-        l92_df = snap(lag92_we)
-        l668_df = snap(lag668_we)
-        log.info(f"[GOLD] cur={len(cur_df)} lag92={len(l92_df)} lag668={len(l668_df)}")
-        return cur_df, l92_df, l668_df
+        return snap(latest_we), snap(lag92_we), snap(lag668_we)
 
     except Exception as e:
         log.warning(f"[GOLD] load failed: {e}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 
+# ── Weather: chỉ load partition ngày cần thiết ────────────────────────────────
 def _get_s3_fs():
     import pyarrow.fs as pafs
 
@@ -159,10 +177,6 @@ def _get_s3_fs():
 
 
 def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
-    """
-    Tính partition ngày cần load dựa trên event_time (slot_end),
-    KHÔNG dùng wall clock — hệ thống đang replay dữ liệu 2025.
-    """
     import pyarrow.dataset as ds
 
     needed: set[str] = set()
@@ -176,7 +190,6 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
     ]:
         pt = slot_end - pd.Timedelta(minutes=delta_min)
         needed.add(pt.strftime("%Y-%m-%d"))
-        # edge case: slot cuối ngày + weather lead vượt sang ngày hôm sau
         needed.add((pt + pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
 
     frames = []
@@ -191,40 +204,37 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
             if not part.empty:
                 frames.append(part)
         except Exception:
-            pass  # partition không tồn tại cho ngày đó — bình thường
+            pass
 
     if frames:
         wdf = pd.concat(frames, ignore_index=True)
         wdf["window_end"] = pd.to_datetime(wdf["window_end"])
-        log.info(f"[WEATHER] {len(wdf)} rows from {len(frames)} partitions")
         return wdf
 
-    # Fallback CSV — filter đúng ngày event_time, không load toàn bộ
     csv_path = os.getenv("WEATHER_CSV_PATH", "/datasets/weather/2526.csv")
     if os.path.exists(csv_path):
         log.warning("[WEATHER] Parquet not found, CSV fallback")
         wdf = pd.read_csv(csv_path, parse_dates=["window_end"])
         wdf["window_end"] = pd.to_datetime(wdf["window_end"])
-        wdf = wdf[wdf["window_end"].dt.strftime("%Y-%m-%d").isin(needed)]
-        return wdf
+        return wdf[wdf["window_end"].dt.strftime("%Y-%m-%d").isin(needed)]
 
     return pd.DataFrame()
 
 
-def task_predict(**ctx):
-    _ensure_table()
-
-    cur_df, l92_df, l668_df = _load_latest_gold()
-    if cur_df.empty:
-        log.info("[PREDICT] No gold data, skip")
-        return
-
-    cur_df["window_end"] = pd.to_datetime(cur_df["window_end"])
-    slot_end = cur_df["window_end"].iloc[0]
-    log.info(f"[PREDICT] slot_end (event_time) = {slot_end}")
-
-    weather_df = _load_weather(slot_end)
-
+# ── Predict 1 slot ─────────────────────────────────────────────────────────────
+def _predict_slot(
+    slot_end,
+    cur_df,
+    l92_df,
+    l668_df,
+    weather_df,
+    model_a,
+    ver_a,
+    model_b,
+    ver_b,
+    shadow,
+):
+    """Predict 263 zones cho 1 slot và upsert vào PG."""
     feat_df = FeatureBuilder.build_inference_matrix_from_snapshots(
         current_df=cur_df,
         lag92_df=l92_df,
@@ -234,30 +244,7 @@ def task_predict(**ctx):
     if not weather_df.empty:
         feat_df = inject_weather_leads(feat_df, weather_df)
 
-    mlflow.set_tracking_uri(MLFLOW_URI)
-    client = mlflow.tracking.MlflowClient()
-
-    def load_model(name):
-        try:
-            vs = client.get_latest_versions(name, stages=["Production"])
-            if not vs:
-                return None, None
-            return (
-                mlflow.lightgbm.load_model(f"models:/{name}/Production"),
-                vs[0].version,
-            )
-        except Exception as e:
-            log.warning(f"[MODEL] {name}: {e}")
-            return None, None
-
-    model_a, ver_a = load_model("demand_forecast_model_a")
-    model_b, ver_b = load_model("demand_forecast_model_b")
-    shadow, _ = load_model("demand_forecast_shadow")
-
-    # predicted_at = slot_end (event_time)
-    # Wall clock now() sẽ sai vì hệ thống replay x60:
-    # 1 giờ thực tế = 60 giờ event_time → Grafana time axis bị lệch hoàn toàn
-    predicted_at = slot_end
+    predicted_at = slot_end  # event_time, không phải wall clock
 
     rows = []
     for _, row in feat_df.iterrows():
@@ -310,7 +297,7 @@ def task_predict(**ctx):
         )
 
     if not rows:
-        return
+        return 0
 
     cols = [
         "zone_id",
@@ -350,21 +337,111 @@ def task_predict(**ctx):
             )
         conn.commit()
 
-    log.info(f"[PREDICT] upserted {len(rows)} zones → slot {slot_end}")
+    return len(rows)
 
 
+# ── Task chính: loop 4 × 15s ───────────────────────────────────────────────────
+def task_predict(**ctx):
+    _ensure_table()
+
+    # Load models 1 lần cho cả loop — tránh gọi MLflow 4 lần
+    mlflow.set_tracking_uri(MLFLOW_URI)
+    client = mlflow.tracking.MlflowClient()
+
+    def load_model(name):
+        try:
+            vs = client.get_latest_versions(name, stages=["Production"])
+            if not vs:
+                return None, None
+            return (
+                mlflow.lightgbm.load_model(f"models:/{name}/Production"),
+                vs[0].version,
+            )
+        except Exception as e:
+            log.warning(f"[MODEL] {name}: {e}")
+            return None, None
+
+    model_a, ver_a = load_model("demand_forecast_model_a")
+    model_b, ver_b = load_model("demand_forecast_model_b")
+    shadow, _ = load_model("demand_forecast_shadow")
+
+    total_upserted = 0
+
+    for loop_i in range(LOOP_COUNT):
+        loop_start = time.monotonic()
+
+        # Lấy slot đã predict gần nhất từ PG
+        last_slot = _get_last_predicted_slot()
+
+        # Đọc gold
+        cur_df, l92_df, l668_df = _load_latest_gold()
+        if cur_df.empty:
+            log.info(f"[PREDICT] loop {loop_i+1}/{LOOP_COUNT}: gold empty, skip")
+        else:
+            cur_df["window_end"] = pd.to_datetime(cur_df["window_end"])
+            slot_end = cur_df["window_end"].iloc[0]
+            if slot_end.tzinfo is None:
+                slot_end = slot_end.tz_localize("UTC")
+
+            if last_slot is not None and slot_end <= last_slot:
+                # Gold chưa có slot mới — Spark chưa trigger xong
+                log.info(
+                    f"[PREDICT] loop {loop_i+1}/{LOOP_COUNT}: "
+                    f"slot {slot_end} already predicted, skip"
+                )
+            else:
+                weather_df = _load_weather(slot_end)
+                n = _predict_slot(
+                    slot_end,
+                    cur_df,
+                    l92_df,
+                    l668_df,
+                    weather_df,
+                    model_a,
+                    ver_a,
+                    model_b,
+                    ver_b,
+                    shadow,
+                )
+                total_upserted += n
+                log.info(
+                    f"[PREDICT] loop {loop_i+1}/{LOOP_COUNT}: "
+                    f"slot={slot_end} upserted={n} zones"
+                )
+
+        # Sleep phần còn lại của 15 giây (trừ thời gian đã xử lý)
+        elapsed = time.monotonic() - loop_start
+        sleep_for = max(0, LOOP_SLEEP_S - elapsed)
+        if loop_i < LOOP_COUNT - 1:  # không sleep sau vòng cuối
+            log.debug(f"[PREDICT] sleeping {sleep_for:.1f}s")
+            time.sleep(sleep_for)
+
+    log.info(
+        f"[PREDICT] done: total upserted = {total_upserted} across {LOOP_COUNT} loops"
+    )
+
+
+# ── DAG ────────────────────────────────────────────────────────────────────────
 with DAG(
     dag_id="predict_demand",
-    schedule_interval="*/15 * * * *",
+    # Mỗi phút wall clock = 60 phút event_time với SPEED_FACTOR=60
+    # Mỗi DAG run loop 4 × 15s để bắt 4 slot × 15 phút event_time
+    schedule_interval="* * * * *",
     start_date=datetime(2025, 1, 1),
     catchup=False,
+    # max_active_runs=1: không chạy song song, tránh race condition ghi PG
+    max_active_runs=1,
     default_args={
         "owner": "airflow",
-        "retries": 1,
-        "retry_delay": timedelta(minutes=2),
+        "retries": 0,  # không retry — loop_next sẽ bắt lại
+        "retry_delay": timedelta(minutes=1),
     },
     tags=["ml", "inference"],
 ) as dag:
     PythonOperator(
-        task_id="predict", python_callable=task_predict, provide_context=True
+        task_id="predict",
+        python_callable=task_predict,
+        provide_context=True,
+        # execution_timeout = 55s: đảm bảo task kết thúc trước khi DAG run tiếp theo bắt đầu
+        execution_timeout=timedelta(seconds=55),
     )
