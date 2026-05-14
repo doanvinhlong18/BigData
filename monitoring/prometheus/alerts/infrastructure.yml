@@ -128,7 +128,7 @@ groups:
           component: mlflow
         annotations:
           summary: "⚠️ MLflow server DOWN"
-          description: "predict_dag và monitoring_dag không load được model."
+          description: "predict-service và monitoring_dag không load được model."
 
       # ── PostgreSQL (thay thế MetricsAPIDown cũ) ──────────────
       - alert: PostgreSQLDown

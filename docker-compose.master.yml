@@ -272,6 +272,8 @@ services:
       start_period: 20s
 
   # ── AIRFLOW ────────────────────────────────────────────────────
+  # Chỉ còn 2 DAG: monitoring_dag + retrain_dag
+  # predict_dag đã tách ra predict-service (Python loop thuần)
   airflow:
       # Dùng image custom thay vì apache/airflow gốc
       build:
@@ -351,6 +353,53 @@ services:
       - "9102:9102"
     volumes:
       - ./monitoring/airflow-statsd/statsd_mapping.yml:/etc/statsd/statsd_mapping.yml:ro
+
+  # ── PREDICT SERVICE ────────────────────────────────────────────
+  # Thay thế predict_dag trong Airflow.
+  # Vòng lặp Python thuần: poll mỗi POLL_INTERVAL giây, predict ngay
+  # khi gold/aggregated có slot window_end mới — không phụ thuộc
+  # Airflow scheduler overhead, không bị giới hạn cron 1 phút.
+  predict-service:
+    build:
+      context: ./predict_service
+      dockerfile: Dockerfile
+    image: bigdata-predict-service:latest
+    container_name: predict-service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    environment:
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      GOLD_AGG_PATH: s3://gold/aggregated
+      WEATHER_PARQUET_PATH: s3://weather/parquet
+      WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Mỗi 15 giây poll 1 lần — khớp với gold trigger interval
+      POLL_INTERVAL_S: "15"
+      # Reload model từ MLflow mỗi 5 phút — tự nhận promote từ monitoring_dag
+      MODEL_RELOAD_INTERVAL_S: "300"
+      <<: *minio-env
+    volumes:
+      - ./ml:/opt/ml:ro
+      - ${DATASET_PATH}:/datasets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import psycopg2' && echo ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # ── MLFLOW ─────────────────────────────────────────────────────
   mlflow:

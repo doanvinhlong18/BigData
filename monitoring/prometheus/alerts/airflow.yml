@@ -13,23 +13,6 @@ groups:
           summary: "🔴 Airflow DOWN"
           description: "Airflow webserver/scheduler không phản hồi. DAGs sẽ ngừng chạy."
 
-      # ── predict_dag không chạy trong 20 phút ──────────────────
-      # FIX BUG-13: dùng airflow_dag_last_run_seconds_ago (seconds_ago = bao nhiêu giây trước)
-      # Metric > 1200 nghĩa là DAG được scan lần cuối cách đây >20 phút
-      - alert: AirflowPredictDagStale
-        expr: |
-          airflow_dag_last_run_seconds_ago{dag_id="predict_demand"} > 1200
-          or absent(airflow_dag_last_run_seconds_ago{dag_id="predict_demand"}) == 1
-        for: 5m
-        labels:
-          severity: critical
-          component: airflow
-        annotations:
-          summary: "🔴 DAG predict_demand không chạy trong {{ $value }}s"
-          description: |
-            predict_demand schedule là */15 phút nhưng last_run cách đây {{ $value }}s.
-            Prediction pipeline bị ngừng — gold/predictions_monitoring không được cập nhật.
-
       # ── monitoring_dag không chạy trong 70 phút ───────────────
       - alert: AirflowMonitoringDagStale
         expr: |
@@ -42,6 +25,25 @@ groups:
         annotations:
           summary: "⚠️ DAG pipeline_monitoring không chạy trong {{ $value }}s"
           description: "Health check DAG bị stuck. Shadow model promotion sẽ không hoạt động."
+
+      # ── predict-service không ghi prediction trong 3 phút ─────
+      # predict-service là Python loop thuần (không phải Airflow DAG).
+      # Giám sát gián tiếp qua PostgreSQL: nếu MAX(predicted_at) cách
+      # đây > 3 phút (180s) nghĩa là service bị crash hoặc không có model.
+      - alert: PredictServiceStale
+        expr: |
+          (time() - predict_service_last_prediction_timestamp) > 180
+          or absent(predict_service_last_prediction_timestamp) == 1
+        for: 2m
+        labels:
+          severity: critical
+          component: predict_service
+        annotations:
+          summary: "🔴 predict-service không ghi prediction trong {{ $value | humanizeDuration }}"
+          description: |
+            predict-service (Python loop) ngừng hoạt động hoặc không có model Production.
+            Kiểm tra: docker logs predict-service
+            Nếu thiếu model: chạy upload_model_to_mlflow.py trên máy local.
 
       # ── DAG task failed ───────────────────────────────────────
       - alert: AirflowTaskFailed
@@ -69,7 +71,7 @@ groups:
           summary: "🔴 Airflow Scheduler không heartbeat trong {{ $value | humanizeDuration }}"
           description: "Scheduler bị crash. DAGs sẽ không được schedule. Restart Airflow container."
 
-      # ── SQLite lock timeout (vì dùng SQLite + LocalExecutor) ──
+      # ── DAG run queue cao ─────────────────────────────────────
       - alert: AirflowDagRunQueueHigh
         expr: |
           airflow_dag_run_queued > 5
