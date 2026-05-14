@@ -40,9 +40,12 @@ OUTPUT_DIR = (
 # ──────────────────────────────────────────────────────────────────────────────
 
 MODEL_A_FILE = os.path.join(OUTPUT_DIR, "lgb_final_model.txt")
-# Model B = model không dùng weather features — cùng file nếu chỉ train 1 lần,
-# hoặc trỏ đến file khác nếu đã train riêng.
-MODEL_B_FILE = os.getenv("MODEL_B_PATH", MODEL_A_FILE)
+# Model B = model KHÔNG dùng weather features (train với NO_WEATHER_FEATURE_COLS).
+# PHẢI là file khác model_a — dùng cùng file sẽ gây mismatch features khi
+# predict_service fallback sang model_b với NO_WEATHER_FEATURE_COLS.
+# Cách train: chạy train_lgb.py với --no-weather, output vào lgb_model_b.txt.
+# FIX: không dùng MODEL_A_FILE làm default — bắt buộc set MODEL_B_PATH.
+MODEL_B_FILE = os.getenv("MODEL_B_PATH", "")
 
 EXPERIMENT_NAME = "demand_forecast"
 
@@ -123,6 +126,44 @@ def main():
     log.info(f"MLflow URI : {MLFLOW_TRACKING_URI}")
     log.info(f"MinIO      : {MINIO_ENDPOINT}")
 
+    # ── Validate MODEL_B_FILE bắt buộc phải khác MODEL_A_FILE ─────────────────
+    # Model B phải được train với NO_WEATHER_FEATURE_COLS (không có weather leads).
+    # Nếu dùng cùng file: predict_service sẽ gọi model_b.predict_proba(x) với
+    # NO_WEATHER_FEATURE_COLS (34 features) nhưng model thực ra có 46 features
+    # → LightGBM raise ValueError hoặc cho kết quả hoàn toàn sai.
+    if not MODEL_B_FILE:
+        log.error(
+            "[FATAL] MODEL_B_PATH chưa được set.\n"
+            "  Model B phải train riêng với NO_WEATHER_FEATURE_COLS.\n"
+            "  Ví dụ: set MODEL_B_PATH=C:\\...\\lgb_model_b.txt  (Windows)\n"
+            "         export MODEL_B_PATH=/path/to/lgb_model_b.txt  (Linux)\n"
+            "  Sau đó chạy lại upload_model_to_mlflow.py."
+        )
+        sys.exit(1)
+
+    if os.path.abspath(MODEL_A_FILE) == os.path.abspath(MODEL_B_FILE):
+        log.error(
+            "[FATAL] MODEL_A_FILE và MODEL_B_FILE đang trỏ cùng một file.\n"
+            f"  MODEL_A_FILE = {MODEL_A_FILE}\n"
+            f"  MODEL_B_FILE = {MODEL_B_FILE}\n"
+            "  Hãy train model_b riêng (không dùng weather features) và set MODEL_B_PATH."
+        )
+        sys.exit(1)
+
+    # Validate số features khớp với feature_builder constants
+    # model_a: ALL_FEATURE_COLS (~46), model_b: NO_WEATHER_FEATURE_COLS (~34)
+    try:
+        from feature_builder import ALL_FEATURE_COLS, NO_WEATHER_FEATURE_COLS
+
+        _EXPECTED_A = len(ALL_FEATURE_COLS)
+        _EXPECTED_B = len(NO_WEATHER_FEATURE_COLS)
+    except ImportError:
+        _EXPECTED_A = None
+        _EXPECTED_B = None
+        log.warning(
+            "[WARN] Không import được feature_builder — bỏ qua kiểm tra feature count."
+        )
+
     # Kiểm tra file tồn tại trước khi connect
     _check_file(MODEL_A_FILE, "model_a")
     _check_file(MODEL_B_FILE, "model_b")
@@ -145,6 +186,31 @@ def main():
     log.info("[model_b] Loading LightGBM model from file...")
     booster_b = lgb.Booster(model_file=MODEL_B_FILE)
     feature_names_b = booster_b.feature_name()
+
+    # ── Validate feature count sau khi load ───────────────────────────────────
+    n_a, n_b = booster_a.num_feature(), booster_b.num_feature()
+    log.info(f"[model_a] num_features = {n_a}")
+    log.info(f"[model_b] num_features = {n_b}")
+
+    if n_a == n_b:
+        log.error(
+            f"[FATAL] model_a và model_b có cùng số features ({n_a}).\n"
+            "  model_b phải ít features hơn (không có weather leads).\n"
+            "  Kiểm tra lại file MODEL_B_PATH."
+        )
+        sys.exit(1)
+
+    if _EXPECTED_A is not None:
+        if n_a != _EXPECTED_A:
+            log.warning(
+                f"[WARN] model_a có {n_a} features, feature_builder kỳ vọng {_EXPECTED_A}. "
+                "Kiểm tra feature_builder.ALL_FEATURE_COLS."
+            )
+        if n_b != _EXPECTED_B:
+            log.warning(
+                f"[WARN] model_b có {n_b} features, feature_builder kỳ vọng {_EXPECTED_B}. "
+                "Kiểm tra feature_builder.NO_WEATHER_FEATURE_COLS."
+            )
 
     # val_accuracy = 1 - best_error (nếu có trong best_score)
     def get_val_accuracy(booster: lgb.Booster) -> float:

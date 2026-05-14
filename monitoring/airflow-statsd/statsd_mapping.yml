@@ -2,7 +2,7 @@ mappings:
   # ── DAG Run metrics ───────────────────────────────────────────
   # FIX BUG-13: "dag_processing.last_run.seconds_ago" đo số giây trước khi DAG được scan,
   # không phải unix timestamp. Đổi tên metric cho đúng ngữ nghĩa.
-  # Alert phải dùng: airflow_dag_last_run_seconds_ago{dag_id="predict_demand"} > 1200
+  # Alert dùng: airflow_dag_last_run_seconds_ago{dag_id="pipeline_monitoring"} > 4200
   - match: "airflow.dag_processing.last_run.seconds_ago.*"
     name: "airflow_dag_last_run_seconds_ago"
     labels:

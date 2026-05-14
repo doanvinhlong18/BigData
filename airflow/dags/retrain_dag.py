@@ -1,7 +1,7 @@
 """
 airflow/dags/retrain_dag.py
 ─────────────────────────────
-Schedule: 0 2 1 * *  (02:00 ngày 1 hàng tháng)
+Schedule: 0 2 28 * *  (02:00 ngày 1 hàng tháng)
 
 Training flow:
   load_and_prepare → [train_model_a ‖ train_model_b] → compare_and_stage
@@ -157,7 +157,7 @@ def task_compare_and_stage(**ctx):
 
 with DAG(
     dag_id="retrain_models",
-    schedule_interval="0 2 1 * *",
+    schedule_interval="0 2 28 * *",
     start_date=datetime(2025, 1, 1),
     catchup=False,
     default_args={

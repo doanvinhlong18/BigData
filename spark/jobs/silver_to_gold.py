@@ -545,13 +545,17 @@ def main():
 
         adj_df = spark.createDataFrame(adj_rows, adj_schema)
 
-        # (optional nhưng nên dùng vì nhỏ)
-        adj_df = F.broadcast(adj_df)
-
         # ── Compute neighbor demand ──────────────────────────────────────────
+        # FIX: F.broadcast() không tồn tại — broadcast hint phải đặt trực tiếp
+        # trong join thông qua F.broadcast(df) ở vị trí argument, không phải
+        # gán lại biến. Cú pháp đúng: join(F.broadcast(other), ...).
         neighbor_feat = (
             demand_60m.alias("d")
-            .join(adj_df.alias("a"), F.col("d.zone_id") == F.col("a.zone_id"), "left")
+            .join(
+                F.broadcast(adj_df).alias("a"),
+                F.col("d.zone_id") == F.col("a.zone_id"),
+                "left",
+            )
             .join(
                 demand_60m.alias("n"),
                 (F.col("a.neighbor_zone_id") == F.col("n.zone_id"))

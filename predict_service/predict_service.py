@@ -32,6 +32,38 @@ from deltalake import DeltaTable
 import psycopg2
 from psycopg2.extras import execute_values
 
+# ── Prometheus metrics export ─────────────────────────────────────────────────
+# FIX: Alert "PredictServiceStale" dùng metric predict_service_last_prediction_timestamp
+# nhưng metric này chưa được export. Thêm prometheus_client để expose /metrics.
+from prometheus_client import Gauge, start_http_server
+
+METRIC_LAST_PRED_TS = Gauge(
+    "predict_service_last_prediction_timestamp",
+    "Unix timestamp của lần cuối predict_service ghi thành công vào PostgreSQL",
+)
+METRIC_ZONES_PREDICTED = Gauge(
+    "predict_service_zones_predicted_last_slot",
+    "Số zones được predict trong slot gần nhất",
+)
+METRIC_MODEL_LOADED = Gauge(
+    "predict_service_model_loaded",
+    "1 nếu ít nhất 1 model (a hoặc b) đang được load",
+)
+
+# ── Startup validation: feature_builder phải có trước khi import ──────────────
+_FEATURE_BUILDER_PATH = "/opt/ml/feature_builder.py"
+if not os.path.exists(_FEATURE_BUILDER_PATH):
+    # In ra stderr để dễ thấy trong docker logs, rồi exit
+    print(
+        f"[FATAL] {_FEATURE_BUILDER_PATH} không tồn tại.\n"
+        "  Kiểm tra volume mount trong docker-compose:\n"
+        "    volumes:\n"
+        "      - ./ml:/opt/ml\n"
+        "  Không thể khởi động predict_service.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 sys.path.insert(0, "/opt/ml")
 from feature_builder import (
     FeatureBuilder,
@@ -107,35 +139,33 @@ def _pg_conn():
 
 
 def _ensure_table():
-    ddl = """
-    CREATE TABLE IF NOT EXISTS predictions_monitoring (
-        zone_id                 INTEGER      NOT NULL,
-        window_end              TIMESTAMPTZ  NOT NULL,
-        predicted_class         SMALLINT     NOT NULL,
-        pred_confidence         REAL         NOT NULL,
-        used_model              VARCHAR(20)  NOT NULL,
-        model_version           VARCHAR(20),
-        predicted_at            TIMESTAMPTZ  NOT NULL,
-        shadow_predicted_class  SMALLINT,
-        proba_0 REAL, proba_1 REAL, proba_2 REAL,
-        proba_3 REAL, proba_4 REAL, proba_5 REAL,
-        shadow_proba_0 REAL, shadow_proba_1 REAL, shadow_proba_2 REAL,
-        shadow_proba_3 REAL, shadow_proba_4 REAL, shadow_proba_5 REAL,
-        PRIMARY KEY (zone_id, window_end)
-    );
-    CREATE INDEX IF NOT EXISTS idx_pred_predicted_at
-        ON predictions_monitoring (predicted_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_pred_window_end
-        ON predictions_monitoring (window_end DESC);
-    CREATE INDEX IF NOT EXISTS idx_pred_zone_time
-        ON predictions_monitoring (zone_id, window_end DESC);
-    CREATE INDEX IF NOT EXISTS idx_pred_used_model
-        ON predictions_monitoring (used_model, window_end DESC);
+    """
+    Xác nhận bảng predictions_monitoring đã tồn tại.
+    Schema được quản lý bởi postgres/init/02_create_schema.sql (single source of truth).
+    Hàm này KHÔNG tạo lại bảng để tránh drift giữa 2 nơi định nghĩa schema.
+    Nếu bảng chưa tồn tại → log lỗi rõ ràng và exit để người vận hành biết.
+    """
+    check_sql = """
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name   = 'predictions_monitoring'
+        LIMIT 1;
     """
     with _pg_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(ddl)
-        conn.commit()
+            cur.execute(check_sql)
+            row = cur.fetchone()
+
+    if row is None:
+        log.error(
+            "[PG] Bảng predictions_monitoring KHÔNG tồn tại.\n"
+            "  Schema phải được tạo bởi postgres/init/02_create_schema.sql.\n"
+            "  Kiểm tra: docker logs postgres | grep 'predictions_monitoring'\n"
+            "  Hoặc chạy thủ công:\n"
+            "    docker exec -i postgres psql -U admin -d bigdata < postgres/init/02_create_schema.sql"
+        )
+        sys.exit(1)
+
     log.info("[PG] Table predictions_monitoring ready")
 
 
@@ -439,6 +469,15 @@ def main():
         f"| MODEL_RELOAD_INTERVAL={MODEL_RELOAD_INTERVAL}s"
     )
 
+    # FIX: Expose Prometheus metrics trên port 8001
+    # (port 8000 đã dùng bởi kafka-lag-exporter)
+    # Prometheus scrape: thêm job "predict-service" trong prometheus.yml
+    METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
+    start_http_server(METRICS_PORT)
+    log.info(
+        f"[INIT] Prometheus metrics endpoint: http://0.0.0.0:{METRICS_PORT}/metrics"
+    )
+
     # Chờ các service phụ thuộc sẵn sàng
     time.sleep(10)
     _ensure_table()
@@ -479,6 +518,14 @@ def main():
                     log.info(
                         f"[PREDICT] slot={slot_end} | zones={n} "
                         f"| model={'a' if cache.model_a else 'b/fallback'}"
+                    )
+                    # FIX: cập nhật Prometheus metrics sau mỗi lần predict thành công
+                    # Alert "PredictServiceStale" đọc metric này để biết service còn sống.
+                    if n > 0:
+                        METRIC_LAST_PRED_TS.set(time.time())
+                        METRIC_ZONES_PREDICTED.set(n)
+                    METRIC_MODEL_LOADED.set(
+                        1.0 if (cache.model_a or cache.model_b) else 0.0
                     )
 
         except Exception as e:

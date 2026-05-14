@@ -2,20 +2,28 @@ groups:
   - name: pipeline_data_alerts
     interval: 60s
     rules:
-      # NOTE: Các alert nyc_taxi_* (gold lag, prediction lag, confidence)
-      # đã bị bỏ vì metrics-api không còn tồn tại (demo mode).
+      # NOTE: Các alert nyc_taxi_* (gold lag, confidence) đã bị bỏ vì
+      # metrics-api không còn tồn tại (demo mode).
       # Pipeline health được theo dõi qua:
-      #   - Airflow DAG alerts (airflow.yml)
+      #   - airflow.yml   → monitoring_dag, predict-service staleness
+      #   - spark.yml     → job count, batch duration, executor failures
+      #   - kafka.yml     → consumer lag, producer ingestion
       #   - Grafana dashboard đọc trực tiếp từ PostgreSQL
 
-      - alert: AirflowPredictDagStale
+      # ── predict-service không ghi prediction trong 3 phút ─────
+      # Duplicate của alert trong airflow.yml — giữ ở đây để
+      # pipeline_data_alerts group cũng cover trường hợp này.
+      - alert: PredictServiceStale
         expr: |
-          airflow_dag_last_run_seconds_ago{dag_id="predict_demand"} > 1200
-          or absent(airflow_dag_last_run_seconds_ago{dag_id="predict_demand"}) == 1
-        for: 5m
+          (time() - predict_service_last_prediction_timestamp) > 180
+          or absent(predict_service_last_prediction_timestamp) == 1
+        for: 2m
         labels:
           severity: critical
-          component: pipeline
+          component: predict_service
         annotations:
-          summary: "predict_demand DAG chưa chạy trong {{ $value }}s"
-          description: "predict_demand schedule là */15 phút — kiểm tra Airflow."
+          summary: "🔴 predict-service không ghi prediction trong {{ $value | humanizeDuration }}"
+          description: |
+            predict-service (Python loop) ngừng hoạt động hoặc không có model Production.
+            Kiểm tra: docker logs predict-service
+            Nếu thiếu model: chạy upload_model_to_mlflow.py trên máy local.

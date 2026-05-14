@@ -80,7 +80,7 @@ groups:
           severity: warning
           component: airflow
         annotations:
-          summary: "⚠️ {{ $value }} DAG runs đang queue — có thể SQLite contention"
+          summary: "⚠️ {{ $value }} DAG runs đang queue — Airflow executor có thể bị quá tải"
           description: |
-            Nhiều DAG run bị queue. Dấu hiệu SQLite write lock.
-            Cân nhắc chuyển sang PostgreSQL (đã có config trong .env).
+            Nhiều DAG run bị queue. Dấu hiệu executor slot không đủ hoặc scheduler bị chậm.
+            Kiểm tra: số executor slots (parallelism trong airflow.cfg) và tài nguyên CPU/RAM.

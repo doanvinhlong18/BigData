@@ -20,7 +20,8 @@ RUN pip install --no-cache-dir \
     holidays==0.46 \
     boto3==1.34.0 \
     psycopg2-binary==2.9.9 \
-    numpy==1.26.4
+    numpy==1.26.4 \
+    prometheus_client==0.20.0
 
 COPY predict_service.py .
 

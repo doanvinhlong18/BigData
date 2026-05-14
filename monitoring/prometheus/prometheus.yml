@@ -117,6 +117,14 @@ scrape_configs:
     static_configs:
       - targets: ["grafana:3000"]
 
+  # ── predict-service ───────────────────────────────────────
+  # FIX: Thêm scrape job để alert "PredictServiceStale" có metric thực tế.
+  # predict_service expose prometheus_client HTTP server trên port 8001.
+  # Metric chính: predict_service_last_prediction_timestamp (unix timestamp)
+  - job_name: "predict-service"
+    static_configs:
+      - targets: ["predict-service:8001"]
+
   # ── cAdvisor ─────────────────────────────────────────────
   - job_name: "cadvisor"
     static_configs:
