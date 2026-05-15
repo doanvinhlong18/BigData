@@ -1,0 +1,597 @@
+version: "3.8"
+
+# ================================================================
+# docker-compose.master.yml — Machine 1 (Master)
+# Thay đổi so với bản gốc:
+#   + PostgreSQL service (shared: Airflow meta + MLflow + predictions)
+#   + Airflow: SQLite → PostgreSQL
+#   + MLflow:  SQLite → PostgreSQL
+#   + Grafana: datasource PostgreSQL trực tiếp
+#   - metrics-api: BỎ (Grafana đọc PG trực tiếp, không cần)
+#   - alertmanager: BỎ (demo mode)
+# ================================================================
+
+x-spark-base: &spark-base
+  image: bigdata-spark:latest
+  build:
+    context: ./spark
+    dockerfile: Dockerfile
+
+x-minio-env: &minio-env
+  AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+  MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT}
+
+services:
+
+  # ── ZOOKEEPER ─────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_JMX_PORT: 9999
+      KAFKA_JMX_HOSTNAME: zookeeper
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: echo ruok | nc localhost 2181 | grep imok
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── KAFKA ──────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: unless-stopped
+    mem_limit: 2g   # JVM heap 1G + overhead/metaspace/GC ~600M — buffer tránh OOM kill
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://${MASTER_IP}:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 48
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms512M"
+      KAFKA_NUM_NETWORK_THREADS: 4
+      KAFKA_NUM_IO_THREADS: 6
+      KAFKA_JMX_PORT: 9999
+      KAFKA_JMX_HOSTNAME: kafka
+      KAFKA_OPTS: >-
+        -javaagent:/opt/kafka-jmx-exporter/jmx_prometheus_javaagent.jar=7071:/opt/kafka-jmx-exporter/kafka-jmx-exporter.yml
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+      - "7071:7071"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - ./monitoring/kafka-exporter:/opt/kafka-jmx-exporter:ro
+    healthcheck:
+      test: kafka-broker-api-versions --bootstrap-server localhost:9092
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+
+  # ── KAFKA SETUP ────────────────────────────────────────────────
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      kafka-topics --create --if-not-exists \
+        --bootstrap-server kafka:9092 \
+        --topic nyc_taxi_events \
+        --partitions 3 \
+        --replication-factor 1 \
+        --config retention.ms=172800000
+      echo 'Topics OK'
+      kafka-topics --list --bootstrap-server kafka:9092
+      "
+    restart: on-failure
+
+  # ── KAFKA LAG EXPORTER ─────────────────────────────────────────
+  kafka-lag-exporter:
+    image: lightbend/kafka-lag-exporter:0.8.2
+    container_name: kafka-lag-exporter
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_LAG_EXPORTER_KAFKA_BROKERS: "kafka:9092"
+      KAFKA_LAG_EXPORTER_PORT: 8000
+      KAFKA_LAG_EXPORTER_POLL_INTERVAL: "30 seconds"
+    ports:
+      - "8099:8000"
+    volumes:
+      - ./monitoring/kafka-exporter/lag-exporter.conf:/opt/docker/conf/application.conf:ro
+
+  # ── MINIO ──────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: unless-stopped
+    mem_limit: 1g   # S3-compatible object store — 1G đủ cho workload Delta + parquet
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      MINIO_API_REQUESTS_MAX: 600
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: curl -f http://localhost:9000/minio/health/live
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── MINIO SETUP ────────────────────────────────────────────────
+  minio-setup:
+    image: minio/mc:latest
+    container_name: minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+      mc mb -p local/bronze
+      mc mb -p local/silver
+      mc mb -p local/gold
+      mc mb -p local/weather
+      mc mb -p local/mlflow-artifacts
+      mc mb -p local/checkpoints
+      echo 'Buckets OK'
+      "
+    restart: on-failure
+
+  # ── SPARK MASTER ───────────────────────────────────────────────
+  spark-master:
+    <<: *spark-base
+    container_name: spark-master
+    restart: unless-stopped
+    command: spark-class org.apache.spark.deploy.master.Master
+    environment:
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+      SPARK_DAEMON_MEMORY: 1g
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+      - "4040:4040"
+    volumes:
+      - ./spark/jobs:/opt/spark/app/spark/jobs
+      - ./scripts:/opt/spark/app/scripts
+      - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+      - ${DATASET_PATH}:/datasets:ro
+    healthcheck:
+      test: curl -f http://localhost:8080
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── SPARK WORKER (SINGLE-MACHINE) ──────────────────────────────
+  # Bật khi chỉ có 1 máy: KHÔNG bật service này nếu đã có máy worker riêng
+  # chạy docker-compose.worker.yml (để tránh đăng ký 2 worker cùng master).
+  #
+  # Phân bổ RAM 16GB (single-machine):
+  #   Kafka ~1.5G | MinIO ~512M | Postgres ~512M | Airflow ~2G
+  #   MLflow ~512M | Prometheus+Grafana ~768M | Producers ~768M
+  #   Spark Master ~1G | spark-worker 5G | OS+overhead ~3G
+  #
+  # Để BẬT: bỏ comment toàn bộ block dưới đây
+  # Để TẮT (khi có máy worker riêng): comment lại hoặc xóa
+  spark-worker:
+    <<: *spark-base
+    container_name: spark-worker-local
+    restart: unless-stopped
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    command: spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      # 5G để còn đủ RAM cho services khác trên cùng máy 16GB
+      SPARK_WORKER_MEMORY: 5g
+      # Đặt theo số core thực — mặc định 4, chỉnh theo máy cụ thể
+      SPARK_WORKER_CORES: 4
+      SPARK_WORKER_WEBUI_PORT: 8082
+      SPARK_DAEMON_MEMORY: 512m
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./spark/jobs:/opt/spark/app/spark/jobs:ro
+      - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+    mem_limit: 6g
+    healthcheck:
+      test: curl -f http://localhost:8082
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── POSTGRES ───────────────────────────────────────────────────
+  # Shared cluster cho: Airflow metadata, MLflow experiments, predictions
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: unless-stopped
+    mem_limit: 1g   # shared_buffers 256M + work_mem + overhead — đủ cho 3 databases nhỏ
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command: >
+      postgres
+        -c shared_buffers=256MB
+        -c work_mem=16MB
+        -c maintenance_work_mem=128MB
+        -c max_connections=200
+        -c log_min_duration_statement=500
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=16MB
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── AIRFLOW ────────────────────────────────────────────────────
+  # Chỉ còn 2 DAG: monitoring_dag + retrain_dag
+  # predict_dag đã tách ra predict-service (Python loop thuần)
+  airflow:
+      # Dùng image custom thay vì apache/airflow gốc
+      build:
+        context: ./airflow
+        dockerfile: Dockerfile
+      image: bigdata-airflow:latest   # cache lại, không build lại mỗi lần up
+      container_name: airflow
+      restart: unless-stopped
+      depends_on:
+        postgres:
+          condition: service_healthy
+      environment:
+        AIRFLOW__CORE__EXECUTOR: LocalExecutor
+        AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+        AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+        AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+        AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+        AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
+        AIRFLOW__CORE__PARALLELISM: 4
+        AIRFLOW__SCHEDULER__MAX_THREADS: 2
+        AIRFLOW__METRICS__STATSD_ON: "true"
+        AIRFLOW__METRICS__STATSD_HOST: airflow-statsd-exporter
+        AIRFLOW__METRICS__STATSD_PORT: 8125
+        AIRFLOW__METRICS__STATSD_PREFIX: airflow
+        MASTER_IP: ${MASTER_IP}
+        MINIO_ENDPOINT: ${MINIO_ENDPOINT_EXTERNAL}
+        MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+        MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+        MLFLOW_TRACKING_URI: http://${MASTER_IP}:5000
+        POSTGRES_HOST: postgres
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: ${POSTGRES_DB}
+        POSTGRES_USER: ${POSTGRES_USER}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        WEATHER_PARQUET_PATH: s3://weather/parquet
+        WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
+        SPARK_MASTER_URL: ${SPARK_MASTER_URL}
+        SILVER_WEATHER: s3a://silver/weather
+        SILVER_RESPONSE: s3a://silver/response
+        SILVER_COMPLETE: s3a://silver/complete
+        GOLD_AGGREGATED: s3a://gold/aggregated
+        <<: *minio-env
+      ports:
+        - "8888:8080"
+      volumes:
+        - airflow-data:/opt/airflow
+        - ./airflow/dags:/opt/airflow/dags
+        - ./ml:/opt/airflow/ml
+        - ./spark/jobs:/opt/airflow/spark_jobs
+      # Command gọn — không còn pip install
+      command: >
+        bash -c "
+          airflow db migrate &&
+          airflow users create --username admin --password admin
+            --firstname Admin --lastname Admin
+            --role Admin --email admin@bigdata.com 2>/dev/null || true &&
+          airflow webserver &
+          airflow scheduler
+        "
+      healthcheck:
+        test: curl -f http://localhost:8080/health
+        interval: 60s
+        timeout: 10s
+        retries: 3
+        start_period: 60s
+
+  # ── AIRFLOW STATSD EXPORTER ────────────────────────────────────
+  airflow-statsd-exporter:
+    image: prom/statsd-exporter:v0.26.0
+    container_name: airflow-statsd-exporter
+    restart: unless-stopped
+    command:
+      - "--statsd.listen-udp=:8125"
+      - "--web.listen-address=:9102"
+      - "--statsd.mapping-config=/etc/statsd/statsd_mapping.yml"
+    ports:
+      - "9102:9102"
+    volumes:
+      - ./monitoring/airflow-statsd/statsd_mapping.yml:/etc/statsd/statsd_mapping.yml:ro
+
+  # ── PREDICT SERVICE ────────────────────────────────────────────
+  # Thay thế predict_dag trong Airflow.
+  # Vòng lặp Python thuần: poll mỗi POLL_INTERVAL giây, predict ngay
+  # khi gold/aggregated có slot window_end mới — không phụ thuộc
+  # Airflow scheduler overhead, không bị giới hạn cron 1 phút.
+  predict-service:
+    build:
+      context: ./predict_service
+      dockerfile: Dockerfile
+    image: bigdata-predict-service:latest
+    container_name: predict-service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    environment:
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      GOLD_AGG_PATH: s3://gold/aggregated
+      WEATHER_PARQUET_PATH: s3://weather/parquet
+      WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Mỗi 15 giây poll 1 lần — khớp với gold trigger interval
+      POLL_INTERVAL_S: "15"
+      # Reload model từ MLflow mỗi 5 phút — tự nhận promote từ monitoring_dag
+      MODEL_RELOAD_INTERVAL_S: "300"
+      <<: *minio-env
+    volumes:
+      - ./ml:/opt/ml:ro
+      - ${DATASET_PATH}:/datasets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import psycopg2' && echo ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── MLFLOW ─────────────────────────────────────────────────────
+  mlflow:
+    image: python:3.11-slim
+    container_name: mlflow
+    restart: unless-stopped
+    mem_limit: 800m   # MLflow server nhẹ; pip install boto3+psycopg2 ~300M tạm thời
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *minio-env
+    command: >
+      bash -c "
+        pip install --quiet mlflow boto3 psycopg2-binary &&
+        mlflow server
+          --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+          --default-artifact-root s3://mlflow-artifacts/
+          --host 0.0.0.0
+          --port 5000
+      "
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: curl -f http://localhost:5000/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── PROMETHEUS ─────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: prometheus
+    restart: unless-stopped
+    mem_limit: 1g   # TSDB 30d + WAL in-memory index ~400M; 1G buffer
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+      - "--web.enable-admin-api"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts:/etc/prometheus/alerts:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - kafka
+      - spark-master
+      - minio
+
+  # ── GRAFANA ────────────────────────────────────────────────────
+  # Đọc trực tiếp từ PostgreSQL — không cần metrics-api làm trung gian
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # grafana-piechart-panel built-in từ v8+, giữ lại an toàn
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/demand_forecast.json
+      GF_UNIFIED_ALERTING_ENABLED: "true"
+      # Credentials cho datasource PostgreSQL provisioning
+      GF_POSTGRES_USER: ${POSTGRES_USER}
+      GF_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+
+  # ── cADVISOR ───────────────────────────────────────────────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "8090:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - "--port=8080"
+      - "--housekeeping_interval=15s"
+      - "--docker_only=true"
+
+  # ── NODE EXPORTER ──────────────────────────────────────────────
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    volumes:
+      - /:/host:ro,rslave
+
+  # ── BLACKBOX EXPORTER ──────────────────────────────────────────
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.24.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    ports:
+      - "9115:9115"
+    command:
+      - "--config.file=/etc/blackbox/config.yml"
+    volumes:
+      - ./monitoring/prometheus/blackbox.yml:/etc/blackbox/config.yml:ro
+
+  # ── PRODUCERS ──────────────────────────────────────────────────
+  request-producer:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    container_name: request-producer
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: python unified_producer.py request
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPEED_FACTOR: ${SPEED_FACTOR}
+      DATASET_PATH: /datasets
+    volumes:
+      - ${DATASET_PATH}:/datasets:ro
+
+  pickup-producer:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    container_name: pickup-producer
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: python unified_producer.py pickup
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPEED_FACTOR: ${SPEED_FACTOR}
+      DATASET_PATH: /datasets
+    volumes:
+      - ${DATASET_PATH}:/datasets:ro
+
+  dropoff-producer:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    container_name: dropoff-producer
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: python unified_producer.py dropoff
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPEED_FACTOR: ${SPEED_FACTOR}
+      DATASET_PATH: /datasets
+    volumes:
+      - ${DATASET_PATH}:/datasets:ro
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  minio-data:
+  postgres-data:
+  airflow-data:
+  mlflow-data:
+  grafana-data:
+  prometheus-data:
+
+networks:
+  default:
+    name: bigdata-net
+    driver: bridge

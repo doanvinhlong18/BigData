@@ -1,0 +1,90 @@
+mappings:
+  # ── DAG Run metrics ───────────────────────────────────────────
+  # FIX BUG-13: "dag_processing.last_run.seconds_ago" đo số giây trước khi DAG được scan,
+  # không phải unix timestamp. Đổi tên metric cho đúng ngữ nghĩa.
+  # Alert dùng: airflow_dag_last_run_seconds_ago{dag_id="pipeline_monitoring"} > 4200
+  - match: "airflow.dag_processing.last_run.seconds_ago.*"
+    name: "airflow_dag_last_run_seconds_ago"
+    labels:
+      dag_id: "$1"
+
+  - match: "airflow.dagrun.duration.success.*"
+    name: "airflow_dag_run_duration_seconds"
+    labels:
+      dag_id: "$1"
+      status: "success"
+
+  - match: "airflow.dagrun.duration.failed.*"
+    name: "airflow_dag_run_duration_seconds"
+    labels:
+      dag_id: "$1"
+      status: "failed"
+
+  - match: "airflow.dagrun.*.first_task_scheduling_delay"
+    name: "airflow_dag_run_first_task_scheduling_delay_seconds"
+    labels:
+      dag_id: "$1"
+
+  # ── Task metrics ─────────────────────────────────────────────
+  - match: "airflow.ti.start.*.*"
+    name: "airflow_task_started_total"
+    labels:
+      dag_id: "$1"
+      task_id: "$2"
+
+  - match: "airflow.ti.finish.*.*.success"
+    name: "airflow_task_success_total"
+    labels:
+      dag_id: "$1"
+      task_id: "$2"
+
+  - match: "airflow.ti.finish.*.*.failed"
+    name: "airflow_task_failed_total"
+    labels:
+      dag_id: "$1"
+      task_id: "$2"
+
+  # ── Scheduler metrics ────────────────────────────────────────
+  - match: "airflow.scheduler_heartbeat"
+    name: "airflow_scheduler_heartbeat_total"
+    labels: {}
+
+  - match: "airflow.scheduler.tasks.running"
+    name: "airflow_scheduler_tasks_running"
+    labels: {}
+
+  - match: "airflow.scheduler.tasks.starving"
+    name: "airflow_scheduler_tasks_starving"
+    labels: {}
+
+  - match: "airflow.dagbag_size"
+    name: "airflow_dag_bag_size"
+    labels: {}
+
+  # ── DAG run queue ────────────────────────────────────────────
+  - match: "airflow.dag_run.queued.*"
+    name: "airflow_dag_run_queued"
+    labels:
+      dag_id: "$1"
+
+  - match: "airflow.dag_run.running.*"
+    name: "airflow_dag_run_running"
+    labels:
+      dag_id: "$1"
+
+  # ── Pool metrics ─────────────────────────────────────────────
+  - match: "airflow.pool.open_slots.*"
+    name: "airflow_pool_open_slots"
+    labels:
+      pool_name: "$1"
+
+  - match: "airflow.pool.used_slots.*"
+    name: "airflow_pool_used_slots"
+    labels:
+      pool_name: "$1"
+
+  # ── Catch-all ────────────────────────────────────────────────
+  - match: "airflow.*"
+    name: "airflow_generic_metric"
+    labels:
+      metric: "$1"

@@ -1,0 +1,86 @@
+groups:
+  - name: airflow_alerts
+    interval: 60s
+    rules:
+      # ── Airflow webserver down ────────────────────────────────
+      - alert: AirflowDown
+        expr: up{job="airflow"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: airflow
+        annotations:
+          summary: "🔴 Airflow DOWN"
+          description: "Airflow webserver/scheduler không phản hồi. DAGs sẽ ngừng chạy."
+
+      # ── monitoring_dag không chạy trong 70 phút ───────────────
+      - alert: AirflowMonitoringDagStale
+        expr: |
+          airflow_dag_last_run_seconds_ago{dag_id="pipeline_monitoring"} > 4200
+          or absent(airflow_dag_last_run_seconds_ago{dag_id="pipeline_monitoring"}) == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: airflow
+        annotations:
+          summary: "⚠️ DAG pipeline_monitoring không chạy trong {{ $value }}s"
+          description: "Health check DAG bị stuck. Shadow model promotion sẽ không hoạt động."
+
+      # ── predict-service không ghi prediction trong 3 phút ─────
+      # predict-service là Python loop thuần (không phải Airflow DAG).
+      # Giám sát gián tiếp qua PostgreSQL: nếu MAX(predicted_at) cách
+      # đây > 3 phút (180s) nghĩa là service bị crash hoặc không có model.
+      - alert: PredictServiceStale
+        expr: |
+          (time() - predict_service_last_prediction_timestamp) > 180
+          or absent(predict_service_last_prediction_timestamp) == 1
+        for: 2m
+        labels:
+          severity: critical
+          component: predict_service
+        annotations:
+          summary: "🔴 predict-service không ghi prediction trong {{ $value | humanizeDuration }}"
+          description: |
+            predict-service (Python loop) ngừng hoạt động hoặc không có model Production.
+            Kiểm tra: docker logs predict-service
+            Nếu thiếu model: chạy upload_model_to_mlflow.py trên máy local.
+
+      # ── DAG task failed ───────────────────────────────────────
+      - alert: AirflowTaskFailed
+        expr: |
+          increase(airflow_task_failed_total[30m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: airflow
+        annotations:
+          summary: "⚠️ Airflow task thất bại: {{ $labels.dag_id }}.{{ $labels.task_id }}"
+          description: |
+            DAG {{ $labels.dag_id }} task {{ $labels.task_id }} failed {{ $value }} lần trong 30 phút.
+            Kiểm tra Airflow logs tại cổng 8888 trên master node.
+
+      # ── Scheduler heartbeat mất ───────────────────────────────
+      - alert: AirflowSchedulerNotHeartbeating
+        expr: |
+          rate(airflow_scheduler_heartbeat_total[5m]) == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: airflow
+        annotations:
+          summary: "🔴 Airflow Scheduler không heartbeat trong {{ $value | humanizeDuration }}"
+          description: "Scheduler bị crash. DAGs sẽ không được schedule. Restart Airflow container."
+
+      # ── DAG run queue cao ─────────────────────────────────────
+      - alert: AirflowDagRunQueueHigh
+        expr: |
+          airflow_dag_run_queued > 5
+        for: 10m
+        labels:
+          severity: warning
+          component: airflow
+        annotations:
+          summary: "⚠️ {{ $value }} DAG runs đang queue — Airflow executor có thể bị quá tải"
+          description: |
+            Nhiều DAG run bị queue. Dấu hiệu executor slot không đủ hoặc scheduler bị chậm.
+            Kiểm tra: số executor slots (parallelism trong airflow.cfg) và tài nguyên CPU/RAM.

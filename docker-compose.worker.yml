@@ -1,0 +1,46 @@
+version: "3.8"
+
+# ================================================================
+# docker-compose.worker.yml — Machine 2 + 3 (Spark Workers)
+# Chạy trên mỗi máy worker:
+#   WORKER_ID=A docker-compose -f docker-compose.worker.yml up -d
+#   WORKER_ID=B docker-compose -f docker-compose.worker.yml up -d
+# ================================================================
+
+services:
+  spark-worker:
+    image: bigdata-spark:latest
+    container_name: spark-worker-${WORKER_ID:-A}
+    restart: unless-stopped
+    command: >
+      spark-class org.apache.spark.deploy.worker.Worker
+      spark://${MASTER_IP}:7077
+    environment:
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-13G}
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-10}
+      SPARK_WORKER_WEBUI_PORT: 8081
+      SPARK_DAEMON_MEMORY: 512m
+      # S3A credentials — worker cần để ghi MinIO trên master
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./spark/jobs:/opt/spark/app/spark/jobs:ro
+    # Resolve hostnames về IP master — quan trọng
+    extra_hosts:
+      - "spark-master:${MASTER_IP}"
+      - "kafka:${MASTER_IP}"
+      - "minio:${MASTER_IP}"
+      - "postgres:${MASTER_IP}"
+    healthcheck:
+      test: curl -f http://localhost:8081
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  default:
+    name: bigdata-worker-net
+    driver: bridge

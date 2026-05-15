@@ -1,0 +1,85 @@
+groups:
+  - name: spark_alerts
+    interval: 30s
+    rules:
+      # ── Spark Master down ─────────────────────────────────────
+      - alert: SparkMasterDown
+        expr: up{job="spark-master"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: spark
+        annotations:
+          summary: "🔴 Spark Master DOWN"
+          description: "Spark Master không phản hồi. Tất cả Spark jobs đang chạy sẽ fail."
+
+      # ── Không có worker nào active ────────────────────────────
+      - alert: SparkNoActiveWorkers
+        expr: spark_master_workers_alive < 1
+        for: 2m
+        labels:
+          severity: critical
+          component: spark
+        annotations:
+          summary: "🔴 Spark không có Worker nào active"
+          description: "Không có Spark worker. Bronze/Silver/Gold pipeline ngừng hoàn toàn."
+
+      # ── Worker mất kết nối ────────────────────────────────────
+      - alert: SparkWorkerLost
+        expr: spark_master_workers_alive < spark_master_workers_alive offset 5m
+        for: 2m
+        labels:
+          severity: warning
+          component: spark
+        annotations:
+          summary: "⚠️ Spark Worker bị mất kết nối"
+          description: "Số worker giảm từ {{ $value | humanize }} xuống. Kiểm tra docker-compose.worker.yml trên máy worker."
+
+      # ── Không có streaming job nào chạy ──────────────────────
+      - alert: SparkNoActiveStreamingJobs
+        expr: spark_master_apps_running < 3
+        for: 5m
+        labels:
+          severity: critical
+          component: spark
+        annotations:
+          summary: "🔴 Ít hơn 3 Spark Streaming job đang chạy (hiện tại: {{ $value }})"
+          description: |
+            Bình thường có 5 jobs: kafka_to_bronze, request_silver, request_to_response_silver, complete_silver, silver_to_gold.
+            Một số job đã crash. Chạy lại: bash scripts/submit-jobs.sh
+
+      # ── Streaming processing lag ──────────────────────────────
+      - alert: SparkStreamingBatchDurationHigh
+        expr: |
+          spark_streaming_last_batch_processing_duration_ms > 30000
+        for: 5m
+        labels:
+          severity: warning
+          component: spark
+        annotations:
+          summary: "⚠️ Spark Streaming batch duration > 30s ({{ $value }}ms)"
+          description: "Batch xử lý quá lâu. Backpressure có thể đang kick in. Kiểm tra worker memory/CPU."
+
+      # ── Driver OOM hoặc GC overhead ──────────────────────────
+      - alert: SparkDriverMemoryHigh
+        expr: |
+          spark_driver_jvm_memory_heap_used / spark_driver_jvm_memory_heap_max > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: spark
+        annotations:
+          summary: "⚠️ Spark Driver heap usage > 85%"
+          description: "Heap usage {{ $value | humanizePercentage }}. Nguy cơ OOM. Tăng SPARK_DAEMON_MEMORY hoặc giảm neighbor demand pandas collect."
+
+      # ── Executor bị evict ─────────────────────────────────────
+      - alert: SparkExecutorsFailing
+        expr: |
+          increase(spark_executor_failed_total[10m]) > 3
+        for: 3m
+        labels:
+          severity: warning
+          component: spark
+        annotations:
+          summary: "⚠️ {{ $value }} Spark Executor failures trong 10 phút"
+          description: "Executor đang fail liên tục. Kiểm tra MinIO connectivity và worker disk space."

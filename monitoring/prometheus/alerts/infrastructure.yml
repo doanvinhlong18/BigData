@@ -1,0 +1,142 @@
+groups:
+  - name: infrastructure_alerts
+    interval: 30s
+    rules:
+      # ── Host CPU ──────────────────────────────────────────────
+      - alert: HostCPUHigh
+        expr: |
+          100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "⚠️ CPU usage > 85% trên {{ $labels.instance }}"
+          description: "CPU {{ $value | humanize }}%. Spark hoặc Kafka đang tốn nhiều CPU."
+
+      - alert: HostCPUCritical
+        expr: |
+          100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 5m
+        labels:
+          severity: critical
+          component: host
+        annotations:
+          summary: "🔴 CPU usage > 95% — hệ thống quá tải"
+          description: "CPU {{ $value | humanize }}%. Cần kill bớt process hoặc scale worker."
+
+      # ── Host RAM ──────────────────────────────────────────────
+      - alert: HostMemoryHigh
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "⚠️ RAM usage > 85% ({{ $value | humanize }}%)"
+          description: "Spark executor hoặc Airflow có thể bị OOM."
+
+      - alert: HostMemoryCritical
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+          component: host
+        annotations:
+          summary: "🔴 RAM gần đầy ({{ $value | humanize }}%) — nguy cơ OOM Kill"
+          description: "Hệ thống sắp hết RAM. Spark executors hoặc Kafka sẽ bị kill."
+
+      # ── Host Disk ─────────────────────────────────────────────
+      - alert: HostDiskSpaceLow
+        expr: |
+          (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100 > 75
+        for: 10m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "⚠️ Disk usage > 75% trên {{ $labels.instance }}"
+          description: "Disk {{ $value | humanize }}% đầy. MinIO data và Kafka logs đang tăng."
+
+      - alert: HostDiskSpaceCritical
+        expr: |
+          (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          component: host
+        annotations:
+          summary: "🔴 Disk > 90% — MinIO/Kafka có thể ngừng ghi"
+          description: "Disk gần đầy. MinIO sẽ reject writes."
+
+      # ── MinIO ─────────────────────────────────────────────────
+      - alert: MinIODown
+        expr: up{job="minio"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: minio
+        annotations:
+          summary: "🔴 MinIO DOWN"
+          description: "Tất cả Bronze/Silver/Gold Delta tables không thể ghi/đọc."
+
+      - alert: MinIODiskUsageHigh
+        expr: minio_cluster_disk_used_bytes / minio_cluster_disk_total_bytes > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          component: minio
+        annotations:
+          summary: "⚠️ MinIO disk usage > 80%"
+          description: "MinIO đang dùng {{ $value | humanizePercentage }} dung lượng."
+
+      # ── Container crash loop ──────────────────────────────────
+      # FIX: thay metrics-api → postgres trong regex
+      - alert: ContainerCrashLooping
+        expr: |
+          increase(container_last_seen{
+            container_label_com_docker_compose_service=~"kafka|spark-master|airflow|minio|mlflow|postgres"
+          }[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "🔴 Container {{ $labels.container_label_com_docker_compose_service }} không còn thấy"
+          description: "Container có thể đã crash. Kiểm tra: docker ps -a"
+
+      # ── Network I/O ───────────────────────────────────────────
+      - alert: HostNetworkReceiveHigh
+        expr: |
+          rate(node_network_receive_bytes_total{device="eth0"}[5m]) > 100e6
+        for: 5m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "⚠️ Network receive > 100MB/s"
+          description: "Có thể Spark shuffle đang tốn nhiều băng thông."
+
+      # ── MLflow ───────────────────────────────────────────────
+      - alert: MLflowDown
+        expr: probe_success{instance="http://mlflow:5000/health"} == 0
+        for: 3m
+        labels:
+          severity: warning
+          component: mlflow
+        annotations:
+          summary: "⚠️ MLflow server DOWN"
+          description: "predict-service và monitoring_dag không load được model."
+
+      # ── PostgreSQL (thay thế MetricsAPIDown cũ) ──────────────
+      - alert: PostgreSQLDown
+        expr: probe_success{instance="postgres:5432"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: postgres
+        annotations:
+          summary: "🔴 PostgreSQL DOWN"
+          description: "predictions_monitoring không ghi được. Grafana dashboard trống. Airflow và MLflow mất backend."
