@@ -209,7 +209,7 @@ def main():
         retries=3,
         retry_backoff_ms=500,
     )
-    cur = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    cur = datetime(2026, 2, 1, tzinfo=timezone.utc)
     if cfg["single_file"]:
         fp = os.path.join(DATASET_BASE, cfg["folder"], cfg["file_tmpl"])
         if os.path.exists(fp):

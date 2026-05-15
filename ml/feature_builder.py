@@ -348,7 +348,7 @@ NO_WEATHER_FEATURE_COLS = TEMPORAL_COLS + BASE_DEMAND_COLS + LAG_COLS  # fallbac
 import holidays
 
 # US holidays (NYC dùng US là đủ)
-US_HOLIDAYS = holidays.US(years=[2022, 2023, 2024, 2025, 2026])
+US_HOLIDAYS = holidays.US(years=[2025, 2026])
 
 
 # ── Core helpers ──────────────────────────────────────────────────────────────

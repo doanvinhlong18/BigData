@@ -158,7 +158,7 @@ def task_compare_and_stage(**ctx):
 with DAG(
     dag_id="retrain_models",
     schedule_interval="0 2 28 * *",
-    start_date=datetime(2025, 1, 1),
+    start_date=datetime(2026, 2, 1),
     catchup=False,
     default_args={
         "owner": "airflow",
