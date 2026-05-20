@@ -53,11 +53,25 @@ scrape_configs:
     static_configs:
       - targets: ["spark-master:8080"]
 
-  # ── Spark Worker ──────────────────────────────────────────
-  - job_name: "spark-worker"
+  # ── Spark Worker (local — on master Docker network) ───────────
+  # Optional local worker (spark-worker-local in docker-compose.master.yml).
+  # Comment out if you disabled it.
+  - job_name: "spark-worker-local"
     metrics_path: "/metrics/worker/prometheus/"
     static_configs:
-      - targets: ["spark-worker:8081"]
+      - targets: ["spark-worker-local:8082"]
+        labels:
+          machine: "master"
+
+  # ── Spark Worker (remote machine via VPN) ─────────────────────
+  # IMPORTANT: replace 192.168.10.2 with your actual WORKER_IP.
+  # After editing, reload: curl -X POST http://localhost:9090/-/reload
+  - job_name: "spark-worker-remote"
+    metrics_path: "/metrics/worker/prometheus/"
+    static_configs:
+      - targets: ["192.168.10.2:8081"]
+        labels:
+          machine: "worker-A"
 
   # ── Spark Driver ──────────────────────────────────────────
   - job_name: "spark-driver-metrics"
@@ -134,11 +148,25 @@ scrape_configs:
         regex: "kafka|spark-master|spark-worker|airflow|minio|mlflow|zookeeper|request-producer|pickup-producer|dropoff-producer|postgres"
         action: keep
 
-  # ── Node Exporter ─────────────────────────────────────────
-  - job_name: "node-exporter"
+  # ── Node Exporter (master machine) ───────────────────────────
+  - job_name: "node-exporter-master"
     static_configs:
-      - targets: ["node-exporter:9100"]
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: instance
-        replacement: "master-node"
+      - targets: ["localhost:9100"]
+        labels:
+          machine: "master"
+
+  # ── Node Exporter (worker machine via VPN) ────────────────────
+  # Replace 192.168.10.2 with your actual WORKER_IP.
+  - job_name: "node-exporter-worker"
+    static_configs:
+      - targets: ["192.168.10.2:9100"]
+        labels:
+          machine: "worker-A"
+
+  # ── cAdvisor (worker machine via VPN) ─────────────────────────
+  # Replace 192.168.10.2 with your actual WORKER_IP.
+  - job_name: "cadvisor-worker"
+    static_configs:
+      - targets: ["192.168.10.2:8090"]
+        labels:
+          machine: "worker-A"

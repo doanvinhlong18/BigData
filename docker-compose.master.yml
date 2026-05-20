@@ -58,6 +58,11 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # KAFKA_LISTENERS: what Kafka binds to inside the container (0.0.0.0 = all interfaces)
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      # KAFKA_ADVERTISED_LISTENERS: what Kafka tells clients to connect to
+      #   PLAINTEXT  → used by containers on the same Docker network (kafka:9092)
+      #   PLAINTEXT_HOST → used by external machines via VPN (MASTER_IP:29092)
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://${MASTER_IP}:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
@@ -177,14 +182,24 @@ services:
     restart: unless-stopped
     command: spark-class org.apache.spark.deploy.master.Master
     environment:
+      # spark-master hostname — Docker DNS resolves this on the master network.
+      # Remote workers resolve it via extra_hosts: spark-master:${MASTER_IP}
       SPARK_MASTER_HOST: spark-master
       SPARK_MASTER_PORT: 7077
       SPARK_MASTER_WEBUI_PORT: 8080
       SPARK_DAEMON_MEMORY: 1g
+      # Bind to all interfaces inside the container so published ports work
+      SPARK_LOCAL_IP: "0.0.0.0"
+      # Passed into submit-jobs.sh so the driver can advertise MASTER_IP to remote workers
+      MASTER_IP: ${MASTER_IP}
+      # S3A credentials for spark-submit launched from this container
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
     ports:
-      - "7077:7077"
-      - "8080:8080"
-      - "4040:4040"
+      - "7077:7077"   # Spark Master RPC — workers connect here
+      - "8080:8080"   # Spark Master Web UI
+      - "4040:4040"   # Spark Driver Web UI (client-mode driver)
+      - "7337:7337"   # Driver Block Manager — remote executors reach driver for shuffle
     volumes:
       - ./spark/jobs:/opt/spark/app/spark/jobs
       - ./scripts:/opt/spark/app/scripts
@@ -217,16 +232,18 @@ services:
         condition: service_healthy
     command: spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
-      # 5G để còn đủ RAM cho services khác trên cùng máy 16GB
       SPARK_WORKER_MEMORY: 5g
-      # Đặt theo số core thực — mặc định 4, chỉnh theo máy cụ thể
       SPARK_WORKER_CORES: 4
       SPARK_WORKER_WEBUI_PORT: 8082
+      SPARK_WORKER_PORT: "8086"   # fixed RPC port — avoids random port on restart
       SPARK_DAEMON_MEMORY: 512m
+      # Bind to all interfaces; same Docker network as master so no VPN needed
+      SPARK_LOCAL_IP: "0.0.0.0"
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
     ports:
-      - "8082:8082"
+      - "8082:8082"   # Worker Web UI
+      - "8086:8086"   # Worker RPC
     volumes:
       - ./spark/jobs:/opt/spark/app/spark/jobs:ro
       - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
