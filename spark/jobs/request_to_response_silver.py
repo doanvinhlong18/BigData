@@ -8,9 +8,10 @@ Stream-stream join trên trip_id với watermark để handle late data.
 
 Schema silver/response:
   trip_id, request_datetime, pickup_datetime, on_scene_datetime,
-  PULocationID, DOLocationID,
+  PULocationID, DOLocationID, confirmed_PU,
   hvfhs_license_num, dispatching_base_num, originating_base_num,
-  wav_request_flag, access_a_ride_flag, shared_request_flag
+  wav_request_flag, access_a_ride_flag, shared_request_flag,
+  wav_match_flag, share_match_flag
 """
 
 import os
@@ -79,7 +80,7 @@ def main():
             col("trip_id").isNotNull()
             & col("pickup_datetime").isNotNull()
             & col("PULocationID").isNotNull()
-            & col("PULocationID").between(1, 265)
+            & col("PULocationID").between(1, 263)  # NYC có 263 zones
         )
         .dropDuplicates(["trip_id"])
         .select(
@@ -87,6 +88,9 @@ def main():
             "pickup_datetime",
             "on_scene_datetime",
             col("PULocationID").alias("confirmed_PU"),
+            # match flags từ bronze/pickup — cần cho silver_to_gold tính wav_match/share_match
+            "wav_match_flag",
+            "share_match_flag",
         )
     )
 
@@ -106,9 +110,9 @@ def main():
         req_stream["trip_id"],
         "request_datetime",
         "pickup_datetime",
-        "on_scene_datetime",  # nullable
-        "PULocationID",  # từ request (planned)
-        "confirmed_PU",  # từ pickup (actual)
+        "on_scene_datetime",      # nullable
+        "PULocationID",           # từ request (planned)
+        "confirmed_PU",           # từ pickup (actual)
         "DOLocationID",
         "hvfhs_license_num",
         "dispatching_base_num",
@@ -116,6 +120,9 @@ def main():
         "wav_request_flag",
         "access_a_ride_flag",
         "shared_request_flag",
+        # match flags từ bronze/pickup — dùng trong silver_to_gold để tính wav_match/share_match
+        "wav_match_flag",
+        "share_match_flag",
     )
 
     query = (
