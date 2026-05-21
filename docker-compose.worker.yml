@@ -6,22 +6,22 @@ version: "3.8"
 # HOW IT WORKS (Windows Docker Desktop + Radmin/Tailscale VPN)
 # ─────────────────────────────────────────────────────────────
 # Problem: Docker containers use an internal bridge IP (172.x.x.x)
-# that is NOT routable from the master machine via VPN. When a Spark
-# Worker registers with the Master, it must advertise an IP that the
-# Master can actually reach back on — the VPN IP of the Windows host.
+# that is NOT routable from the master machine via VPN. The Spark Worker
+# must bind to an address that exists inside the container, while the
+# Master/Driver must resolve the same worker name to this host's VPN IP.
 #
 # Solution:
-#   1. SPARK_LOCAL_IP=0.0.0.0  → Worker binds to ALL interfaces in
-#      the container (including the Docker bridge interface).
-#   2. SPARK_DAEMON_JAVA_OPTS=-Dspark.local.hostname=${WORKER_IP}
-#      → Worker advertises the host's VPN IP to the Spark Master.
-#   3. SPARK_EXECUTOR_OPTS=-Dspark.local.hostname=${WORKER_IP}
-#      → Executors spawned by this Worker also advertise the VPN IP.
-#   4. Published ports (8081/8085/7337) → Docker Desktop forwards
-#      WORKER_IP:PORT connections from the master to the container.
+#   1. The worker container hostname is spark-worker-${WORKER_ID}.
+#      Inside the container, that hostname resolves to the container IP,
+#      so Spark can bind successfully.
+#   2. On the master machine, map spark-worker-${WORKER_ID} to WORKER_IP
+#      in docker-compose.master.yml (extra_hosts on spark-master).
+#      Then Spark Master/Driver resolve that same hostname to the VPN IP.
+#   3. Published ports (8081/8085/7337) let Docker Desktop forward
+#      WORKER_IP:PORT connections from the master to this container.
 #
-# Result: Master sees Worker at WORKER_IP:8085 and sends tasks to
-# WORKER_IP:7337 (block manager). Docker Desktop forwards both.
+# Result: Master sees Worker at spark-worker-A:8085, resolves it to
+# WORKER_IP, and Docker Desktop forwards the connection to the container.
 #
 # Usage:
 #   On worker machine, set WORKER_IP in .env to this machine's VPN IP.
@@ -34,14 +34,17 @@ services:
   spark-worker:
     image: bigdata-spark:latest
     container_name: spark-worker-${WORKER_ID:-A}
+    hostname: spark-worker-${WORKER_ID:-A}
     restart: unless-stopped
-    command: >
-      bash -c "
-        export SPARK_LOCAL_IP=0.0.0.0 &&
-        export SPARK_LOCAL_HOSTNAME=${WORKER_IP} &&
-        spark-class org.apache.spark.deploy.worker.Worker
-          spark://${MASTER_IP}:7077
-      "
+    command:
+      - bash
+      - -lc
+      - >
+        exec spark-class org.apache.spark.deploy.worker.Worker
+        --host spark-worker-${WORKER_ID:-A}
+        --port 8085
+        --webui-port 8081
+        spark://${MASTER_IP}:7077
     environment:
       SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-12G}
       SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-8}
@@ -50,15 +53,13 @@ services:
       # The Master contacts the Worker at WORKER_IP:8085 to launch executors.
       SPARK_WORKER_PORT: "8085"
       SPARK_DAEMON_MEMORY: 512m
-      # spark.local.hostname tells Spark's RPC layer to ADVERTISE the
-      # host VPN IP instead of the container's bridge IP.
-      SPARK_DAEMON_JAVA_OPTS: >-
-        -Dspark.local.hostname=${WORKER_IP}
-        -Dspark.local.ip=0.0.0.0
-      # Same setting for executor JVMs so driver on master can reach them.
+      # Spark advertises this stable hostname. It must resolve to WORKER_IP
+      # from the master container, and to the container IP inside this worker.
+      SPARK_LOCAL_HOSTNAME: spark-worker-${WORKER_ID:-A}
+      SPARK_PUBLIC_DNS: spark-worker-${WORKER_ID:-A}
+      # Same hostname for executor JVMs so the driver on master can reach them.
       SPARK_EXECUTOR_OPTS: >-
-        -Dspark.local.hostname=${WORKER_IP}
-        -Dspark.local.ip=0.0.0.0
+        -Dspark.local.hostname=spark-worker-${WORKER_ID:-A}
       # S3A credentials — worker writes Parquet/Delta to MinIO on master
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
@@ -88,43 +89,6 @@ services:
       retries: 3
       start_period: 60s
 
-  # ── NODE EXPORTER ──────────────────────────────────────────────
-  # Exposes worker machine's host metrics to Prometheus on the master.
-  # Prometheus scrapes WORKER_IP:9100 — no need for the master to know
-  # about Docker internals on the worker.
-  node-exporter:
-    image: prom/node-exporter:v1.7.0
-    container_name: node-exporter-worker
-    restart: unless-stopped
-    network_mode: host
-    pid: host
-    command:
-      - "--path.rootfs=/host"
-      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
-    volumes:
-      - /:/host:ro,rslave
-
-  # ── cADVISOR (optional) ────────────────────────────────────────
-  # Container resource metrics for worker machine.
-  # Prometheus scrapes WORKER_IP:8090.
-  # Comment out if worker RAM is tight.
-  cadvisor-worker:
-    image: gcr.io/cadvisor/cadvisor:v0.47.2
-    container_name: cadvisor-worker
-    restart: unless-stopped
-    privileged: true
-    ports:
-      - "8090:8080"
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    command:
-      - "--port=8080"
-      - "--housekeeping_interval=15s"
-      - "--docker_only=true"
 
 networks:
   default:
