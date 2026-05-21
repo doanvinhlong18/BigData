@@ -288,52 +288,82 @@ ZONE_AREAS_KM2: dict[int, float] = {
 }
 
 # ── Feature columns ───────────────────────────────────────────────────────────
+# LAG_MAIN_COLS: các cột được lag 92 slot (~23h) và 668 slot (~7 ngày)
+# - bỏ requests_15m: correlated cao với requests_60m lag, không thêm thông tin ở lag 23h/7d
+# - thêm neighbor_requests_60m, neighbor_pickup_delay_mean: spatial signal có ý nghĩa ở lag
 LAG_MAIN_COLS = [
     "requests_60m",
-    "requests_15m",
     "pickup_60m",
     "dropoff_60m",
     "pickup_delay_mean",
     "imbalance",
+    "neighbor_requests_60m",
+    "neighbor_pickup_delay_mean",
 ]
 WEATHER_LEAD_STEPS = [1, 2, 3]  # T+15, T+30, T+45 phút
 LAG_STEPS = [92, 668]  # ~23h, ~7 ngày
 
-LAG_WEATHER_COLS = ["temperature_2m", "precipitation", "windspeed_10m", "weathercode"]
+# LAG_WEATHER_COLS: đồng bộ notebook cell 38
+# - bỏ precipitation (lagging indicator, đã captured bởi cloud_cover+humidity)
+# - bỏ windspeed_10m (effect captured bởi weather_code)
+# - thêm relative_humidity_2m, surface_pressure, cloud_cover (leading indicators cho mưa)
+# - đổi weathercode → weather_code
+LAG_WEATHER_COLS = [
+    "temperature_2m",
+    "relative_humidity_2m",
+    "surface_pressure",
+    "cloud_cover",
+    "weather_code",
+]
 
+# TEMPORAL_COLS: đồng bộ tên với notebook
+# - slot_sin/cos → slot_15m_sin/cos (slot trong giờ, period=4)
+# - hour_sin/cos → hou_sin/hou_cos
+# - month_num (scalar) → mon_sin/mon_cos (cyclical)
 TEMPORAL_COLS = [
-    "slot_sin",
-    "slot_cos",
-    "hour_sin",
-    "hour_cos",
+    "slot_15m_sin",
+    "slot_15m_cos",
+    "hou_sin",
+    "hou_cos",
     "dow_sin",
     "dow_cos",
     "woy_sin",
     "woy_cos",
     "is_weekend",
     "is_holiday",
-    "month_num",
+    "mon_sin",
+    "mon_cos",
 ]
 
 BASE_DEMAND_COLS = [
+    # demand volume
     "requests_60m",
-    "requests_15m",
     "pickup_60m",
     "dropoff_60m",
+    # matching quality
     "pickup_delay_mean",
     "pickup_delay_std",
     "matched_rp",
     "matched_rd",
-    "wav_requests",
-    "aar_requests",
-    "shared_requests",
-    "uber_requests",
+    # service type flags — đổi tên theo notebook
+    "wav_req",
+    "aar_req",
+    "share_req",
+    "uber_req",
+    "wav_match",
+    "share_match",
+    # financials — signal hành vi, không phải fee
     "avg_fare",
     "avg_distance",
     "avg_driver_pay",
     "avg_tips",
+    "avg_trip_time",
+    # spatial — theo notebook cell 21 compute_neighbor_requests():
+    # chỉ tính neighbor_requests_60m và neighbor_pickup_delay_mean
+    # neighbor_pickup_60m/neighbor_dropoff_60m không có trong compute_neighbor_requests → bỏ
     "neighbor_requests_60m",
-    "neighbor_avg_requests_60m",
+    "neighbor_pickup_delay_mean",
+    # target proxy
     "imbalance",
 ]
 
@@ -347,8 +377,9 @@ NO_WEATHER_FEATURE_COLS = TEMPORAL_COLS + BASE_DEMAND_COLS + LAG_COLS  # fallbac
 
 import holidays
 
-# US holidays (NYC dùng US là đủ)
-US_HOLIDAYS = holidays.US(years=[2025, 2026])
+# US holidays — cover đủ năm training + inference
+# Thêm year mới vào đây khi cần
+US_HOLIDAYS = holidays.US(years=list(range(2023, 2028)))
 
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
@@ -375,23 +406,36 @@ def compute_imbalance(df: pd.DataFrame) -> pd.DataFrame:
 
 def _add_temporal(df: pd.DataFrame) -> pd.DataFrame:
     we = pd.to_datetime(df["window_end"])
-    slot = (we.dt.hour * 4 + we.dt.minute // 15).astype(float)
+
+    # slot trong giờ (0–3, period=4) — tên slot_15m_* theo notebook
+    slot_15m = we.dt.minute // 15
+    df["slot_15m_sin"] = np.sin(2 * np.pi * slot_15m / 4)
+    df["slot_15m_cos"] = np.cos(2 * np.pi * slot_15m / 4)
+
+    # giờ trong ngày (0–23) — tên hou_* theo notebook
+    df["hou_sin"] = np.sin(2 * np.pi * we.dt.hour / 24)
+    df["hou_cos"] = np.cos(2 * np.pi * we.dt.hour / 24)
+
+    # ngày trong tuần (0=Mon … 6=Sun)
     dow = we.dt.dayofweek.astype(float)
-    woy = we.dt.isocalendar().week.astype(float)
-    df["slot_sin"] = np.sin(2 * np.pi * slot / 96)
-    df["slot_cos"] = np.cos(2 * np.pi * slot / 96)
-    df["hour_sin"] = np.sin(2 * np.pi * we.dt.hour / 24)
-    df["hour_cos"] = np.cos(2 * np.pi * we.dt.hour / 24)
     df["dow_sin"] = np.sin(2 * np.pi * dow / 7)
     df["dow_cos"] = np.cos(2 * np.pi * dow / 7)
-    df["woy_sin"] = np.sin(2 * np.pi * woy / 53)
-    df["woy_cos"] = np.cos(2 * np.pi * woy / 53)
-    df["is_weekend"] = (dow >= 5).astype(int)
-    # ===== HOLIDAY WINDOW ±1 DAY =====
-    holiday_dates = pd.to_datetime(list(US_HOLIDAYS.keys()))
 
-    # tạo set gồm holiday, holiday-1, holiday+1
-    holiday_window = pd.Index(
+    # tuần trong năm (1–52)
+    woy = we.dt.isocalendar().week.astype(float)
+    df["woy_sin"] = np.sin(2 * np.pi * woy / 52)
+    df["woy_cos"] = np.cos(2 * np.pi * woy / 52)
+
+    # tháng (1–12) cyclical — thay month_num scalar bằng mon_sin/cos theo notebook
+    month = we.dt.month.astype(float)
+    df["mon_sin"] = np.sin(2 * np.pi * month / 12)
+    df["mon_cos"] = np.cos(2 * np.pi * month / 12)
+
+    df["is_weekend"] = (dow >= 5).astype(int)
+
+    # ── Holiday window ±1 day ──────────────────────────────────────────────────
+    holiday_dates = pd.to_datetime(list(US_HOLIDAYS.keys()))
+    holiday_window = pd.DatetimeIndex(
         np.concatenate(
             [
                 holiday_dates,
@@ -399,10 +443,9 @@ def _add_temporal(df: pd.DataFrame) -> pd.DataFrame:
                 holiday_dates + pd.Timedelta(days=1),
             ]
         )
-    )
-
+    ).normalize().unique()
     df["is_holiday"] = we.dt.normalize().isin(holiday_window).astype(int)
-    df["month_num"] = we.dt.month.astype(float)
+
     return df
 
 
