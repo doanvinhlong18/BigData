@@ -379,7 +379,7 @@ import holidays
 
 # US holidays — cover đủ năm training + inference
 # Thêm year mới vào đây khi cần
-US_HOLIDAYS = holidays.US(years=list(range(2023, 2028)))
+US_HOLIDAYS = holidays.US(years=list(range(2024, 2027)))
 
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
@@ -435,15 +435,19 @@ def _add_temporal(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Holiday window ±1 day ──────────────────────────────────────────────────
     holiday_dates = pd.to_datetime(list(US_HOLIDAYS.keys()))
-    holiday_window = pd.DatetimeIndex(
-        np.concatenate(
-            [
-                holiday_dates,
-                holiday_dates - pd.Timedelta(days=1),
-                holiday_dates + pd.Timedelta(days=1),
-            ]
+    holiday_window = (
+        pd.DatetimeIndex(
+            np.concatenate(
+                [
+                    holiday_dates,
+                    holiday_dates - pd.Timedelta(days=1),
+                    holiday_dates + pd.Timedelta(days=1),
+                ]
+            )
         )
-    ).normalize().unique()
+        .normalize()
+        .unique()
+    )
     df["is_holiday"] = we.dt.normalize().isin(holiday_window).astype(int)
 
     return df

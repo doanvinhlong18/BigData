@@ -222,6 +222,7 @@ def main():
         feature_name=feat_cols,
         weight=sw_tr,
         free_raw_data=True,
+        categorical_feature=["zone_id"],
         params={"max_bin": PARAMS["max_bin"]},
     )
     dtrain.construct()
@@ -237,6 +238,7 @@ def main():
         feature_name=feat_cols,
         weight=sw_val,
         free_raw_data=True,
+        categorical_feature=["zone_id"],
         params={"max_bin": PARAMS["max_bin"]},
     )
     dvalid.construct()
