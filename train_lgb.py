@@ -26,8 +26,8 @@ from sklearn.metrics import classification_report
 # ==============================================================
 # CONFIG — chỉ sửa ở đây
 # ==============================================================
-PARQUET_PATH = r"C:\D\nam4_ki2\BigData\datasets\train_data"  # folder chứa file .parquet
-OUTPUT_DIR = r"C:\D\nam4_ki2\BigData\datasets\lgb_output"  # thư mục lưu kết quả
+PARQUET_PATH = r"D:\BigData-master\BigData\datasets\train_data"  # folder chứa file .parquet
+OUTPUT_DIR = r"D:\BigData-master\BigData\datasets\lgb_output"  # thư mục lưu kết quả
 LABEL_COL = "label_6class"
 DROP_COLS = {"window_end", "label_6class"}
 VALID_RATIO = 0.10  # 80% train / 20% valid theo thứ tự thời gian
@@ -138,7 +138,7 @@ def main():
     X_parts = []
     y_parts = []
     total_rows = 0
-    parquet_files = [f.path for f in dataset.fragments]
+    parquet_files = [f.path for f in dataset.fragments if str(f.path).endswith('.parquet')]
     print(f"  Số file parquet: {len(parquet_files)}")
 
     for file_path in parquet_files:
