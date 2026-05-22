@@ -23,14 +23,23 @@ Metrics:
                ← window request_datetime
     - dropoff: dropoff_60m, matched_rd
                ← window dropoff_datetime
-    - trip:    avg_fare, avg_distance, avg_driver_pay, avg_tips, avg_trip_time
+    - trip:    avg_fare, avg_distance, avg_driver_pay, avg_tips, avg_trip_time,
+               avg_bcf, avg_tolls, avg_congestion_surcharge, avg_airport_fee,
+               avg_sales_tax, avg_cbd_congestion_fee
                ← window dropoff_datetime, trips_valid filter
   Từ silver/response (batch read, lọc theo window_end range):
     - pickup:  pickup_60m, pickup_delay_mean, pickup_delay_std,
                matched_rp, wav_match, share_match
                ← window pickup_datetime
   Tổng hợp:
-    - neighbor: neighbor_requests_60m, neighbor_pickup_delay_mean
+    - neighbor: neighbor_requests_60m, neighbor_pickup_delay_mean, num_neighbors
+    - imbalance: (pickup_delay_mean^1.2 × requests_60m) / zone_area
+    - temporal: is_weekend, is_holiday,
+                slot_15m_sin/cos, dow_sin/cos, hou_sin/cos, woy_sin/cos, mon_sin/cos
+
+TODO: Thêm weather features (temperature_2m, precipitation, snowfall, wind_speed_10m,
+      wind_gusts_10m, relative_humidity_2m, surface_pressure, cloud_cover, weather_code,
+      rain) từ silver/weather khi bảng đó có sẵn — join theo (zone_id, window_end).
 
 Thay đổi so với phiên bản cũ:
   - Đổi tên wav_requests→wav_req, aar_requests→aar_req,
@@ -40,6 +49,14 @@ Thay đổi so với phiên bản cũ:
   - Bỏ requests_15m, req_15m tumbling window (feature 15m đã loại bỏ)
   - Bỏ neighbor_count, neighbor_avg_requests_60m
   - Thêm neighbor_pickup_delay_mean (mean pickup_delay_mean của zone lân cận)
+  [v2 - đồng bộ notebook]:
+  - FIX matched_rp: đổi từ count("trip_id") → sum(request_datetime >= window.start)
+  - FIX matched_rd: đổi từ count("trip_id") → sum(request_datetime >= window.start)
+  - THÊM trip stats: avg_bcf, avg_tolls, avg_congestion_surcharge, avg_airport_fee,
+                     avg_sales_tax, avg_cbd_congestion_fee
+  - THÊM neighbor: num_neighbors
+  - THÊM temporal features: is_weekend, is_holiday, slot_15m_sin/cos, dow_sin/cos,
+                             hou_sin/cos, woy_sin/cos, mon_sin/cos
 
 ZONE_NEIGHBORS: dict hardcode 263 zones NYC.
 """
@@ -48,6 +65,7 @@ import json
 import os
 import time
 import sys
+import math
 
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
@@ -85,6 +103,23 @@ WINDOW_DURATION = "60 minutes"
 SLIDE_DURATION = "15 minutes"
 WATERMARK = "15 minutes"
 TRIGGER_INTERVAL = "15 seconds"
+
+# ── US Holidays 2024–2026 (hardcode để tránh dependency trong Spark job) ──────
+# Đồng bộ notebook Section 2.6 add_temporal_features()
+US_HOLIDAYS = frozenset([
+    # 2024
+    "2024-01-01", "2024-01-15", "2024-02-19", "2024-05-27", "2024-06-19",
+    "2024-07-04", "2024-09-02", "2024-10-14", "2024-11-11", "2024-11-28",
+    "2024-12-25",
+    # 2025
+    "2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-19",
+    "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27",
+    "2025-12-25",
+    # 2026
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-19",
+    "2026-07-04", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26",
+    "2026-12-25",
+])
 
 ZONE_NEIGHBORS = {
     1: [2, 3, 4],
@@ -337,7 +372,7 @@ ZONE_NEIGHBORS = {
     248: [182, 212],
     249: [113, 158],
     250: [],
-256: [],
+    256: [],
 }
 
 def wait_for_source(spark, path, timeout=600):
@@ -358,6 +393,96 @@ def wait_for_source(spark, path, timeout=600):
 
 
 NEIGHBOR_JSON = json.dumps(ZONE_NEIGHBORS)
+
+_PI2 = 2 * math.pi
+
+
+def add_temporal_features(df):
+    """
+    Thêm temporal features từ window_end.
+    Đồng bộ notebook Section 2.6 add_temporal_features() — phiên bản 15-min slide.
+
+    Features được thêm:
+      is_weekend     : 1 nếu Chủ nhật (1) hoặc Thứ 7 (7) theo Spark dayofweek
+      is_holiday     : 1 nếu ngày là US public holiday
+      slot_15m_sin/cos : cyclical encoding slot 15-phút trong giờ (0–3)
+      dow_sin/cos    : cyclical encoding day-of-week (1–7)
+      hou_sin/cos    : cyclical encoding giờ trong ngày (0–23)
+      woy_sin/cos    : cyclical encoding tuần trong năm (1–52)
+      mon_sin/cos    : cyclical encoding tháng (1–12)
+
+    Các cột trung gian (hour, minute, day_of_week, month, week_of_year, date,
+    slot_15m) bị drop sau khi tính xong.
+    """
+    df = df.withColumn("_date", F.to_date("window_end"))
+
+    df = (
+        df
+        .withColumn("_hour",        F.hour("window_end"))
+        .withColumn("_minute",      F.minute("window_end"))
+        .withColumn("_dow",         F.dayofweek("window_end"))   # 1=Sun … 7=Sat
+        .withColumn("_month",       F.month("window_end"))
+        .withColumn("_woy",         F.weekofyear("window_end"))
+        .withColumn("_slot_15m",    F.floor(F.col("_minute") / 15))  # 0,1,2,3
+    )
+
+    # ── is_weekend / is_holiday ───────────────────────────────────────────────
+    df = (
+        df
+        .withColumn("is_weekend",
+                    F.col("_dow").isin(1, 7).cast("int"))
+        .withColumn("is_holiday",
+                    F.col("_date").isin(list(US_HOLIDAYS)).cast("int"))
+    )
+
+    # ── Cyclical: 15-min slot (0–3), period=4 ────────────────────────────────
+    df = (
+        df
+        .withColumn("slot_15m_sin",
+                    F.sin(F.lit(_PI2) * F.col("_slot_15m") / F.lit(4)))
+        .withColumn("slot_15m_cos",
+                    F.cos(F.lit(_PI2) * F.col("_slot_15m") / F.lit(4)))
+    )
+
+    # ── Cyclical: day-of-week (1–7), period=7 ────────────────────────────────
+    df = (
+        df
+        .withColumn("dow_sin",
+                    F.sin(F.lit(_PI2) * F.col("_dow") / F.lit(7)))
+        .withColumn("dow_cos",
+                    F.cos(F.lit(_PI2) * F.col("_dow") / F.lit(7)))
+    )
+
+    # ── Cyclical: hour (0–23), period=24 ─────────────────────────────────────
+    df = (
+        df
+        .withColumn("hou_sin",
+                    F.sin(F.lit(_PI2) * F.col("_hour") / F.lit(24)))
+        .withColumn("hou_cos",
+                    F.cos(F.lit(_PI2) * F.col("_hour") / F.lit(24)))
+    )
+
+    # ── Cyclical: week-of-year (1–52), period=52 ─────────────────────────────
+    df = (
+        df
+        .withColumn("woy_sin",
+                    F.sin(F.lit(_PI2) * F.col("_woy") / F.lit(52)))
+        .withColumn("woy_cos",
+                    F.cos(F.lit(_PI2) * F.col("_woy") / F.lit(52)))
+    )
+
+    # ── Cyclical: month (1–12), period=12 ────────────────────────────────────
+    df = (
+        df
+        .withColumn("mon_sin",
+                    F.sin(F.lit(_PI2) * F.col("_month") / F.lit(12)))
+        .withColumn("mon_cos",
+                    F.cos(F.lit(_PI2) * F.col("_month") / F.lit(12)))
+    )
+
+    # Drop tất cả cột trung gian (prefix "_")
+    drop_cols = ["_date", "_hour", "_minute", "_dow", "_month", "_woy", "_slot_15m"]
+    return df.drop(*drop_cols)
 
 
 def main():
@@ -461,10 +586,15 @@ def main():
             )
             .agg(
                 count("*").alias("pickup_60m"),
-                count("trip_id").alias("matched_rp"),
                 avg("pickup_delay").alias("pickup_delay_mean"),
                 F.coalesce(stddev("pickup_delay"), F.lit(0)).alias("pickup_delay_std"),
-                # wav_match / share_match từ silver/response (có wav_match_flag, share_match_flag)
+                # [FIX] matched_rp: đếm trips có request_datetime trong cùng window
+                # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
+                F.sum(
+                    F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
+                    .otherwise(F.lit(0))
+                ).alias("matched_rp"),
+                # wav_match / share_match từ silver/response
                 count(when(col("wav_match_flag") == "Y", True)).alias("wav_match"),
                 count(when(col("share_match_flag") == "Y", True)).alias("share_match"),
             )
@@ -490,7 +620,12 @@ def main():
             )
             .agg(
                 count("*").alias("dropoff_60m"),
-                count("trip_id").alias("matched_rd"),
+                # [FIX] matched_rd: đếm trips có request_datetime trong cùng window
+                # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
+                F.sum(
+                    F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
+                    .otherwise(F.lit(0))
+                ).alias("matched_rd"),
             )
             .select(
                 col("zone_id"),
@@ -502,6 +637,8 @@ def main():
 
         # ── 4. TRIP STATS — groupBy PULocationID + window dropoff_datetime ──────
         # Filter trips_valid như notebook: trip_miles, trip_time, fare có giá trị hợp lệ
+        # [THÊM] avg_bcf, avg_tolls, avg_congestion_surcharge, avg_airport_fee,
+        #        avg_sales_tax, avg_cbd_congestion_fee — đồng bộ notebook dropoff_stats
         trip_stats = (
             batch_df.filter(
                 col("trip_miles").between(0.3, 500)
@@ -520,6 +657,13 @@ def main():
                 avg("trip_miles").alias("avg_distance"),
                 avg("driver_pay").alias("avg_driver_pay"),
                 avg("tips").alias("avg_tips"),
+                # [THÊM] fee/surcharge features — đồng bộ notebook dropoff_stats
+                avg("bcf").alias("avg_bcf"),
+                avg("tolls").alias("avg_tolls"),
+                avg("congestion_surcharge").alias("avg_congestion_surcharge"),
+                avg("airport_fee").alias("avg_airport_fee"),
+                avg("sales_tax").alias("avg_sales_tax"),
+                avg("cbd_congestion_fee").alias("avg_cbd_congestion_fee"),
             )
             .select(
                 col("zone_id"),
@@ -529,6 +673,12 @@ def main():
                 "avg_distance",
                 "avg_driver_pay",
                 "avg_tips",
+                "avg_bcf",
+                "avg_tolls",
+                "avg_congestion_surcharge",
+                "avg_airport_fee",
+                "avg_sales_tax",
+                "avg_cbd_congestion_fee",
             )
         )
 
@@ -539,7 +689,6 @@ def main():
             .join(trip_stats, on=["zone_id", "window_end"], how="left")
         )
 
-        from pyspark.sql import functions as F
         from pyspark.sql.types import StructType, StructField, IntegerType, DoubleType
 
         # ── Build adjacency DataFrame ────────────────────────────────────────
@@ -563,6 +712,7 @@ def main():
         # ── Compute neighbor features ─────────────────────────────────────────
         # neighbor_requests_60m     : tổng requests_60m của zone lân cận
         # neighbor_pickup_delay_mean: mean pickup_delay_mean của zone lân cận
+        # num_neighbors             : số lượng neighbor có data trong window
         # Đồng bộ notebook cell 21 compute_neighbor_requests()
         neighbor_base = demand_60m.select(
             "zone_id", "window_end", "requests_60m"
@@ -589,18 +739,29 @@ def main():
             .agg(
                 F.sum("n.requests_60m").alias("neighbor_requests_60m"),
                 F.mean("n.pickup_delay_mean").alias("neighbor_pickup_delay_mean"),
+                # [THÊM] num_neighbors: đếm zone lân cận có data (non-null neighbor_zone_id)
+                # Đồng bộ notebook compute_neighbor_requests()
+                F.count("a.neighbor_zone_id").alias("num_neighbors"),
             )
         )
 
         # ── Join vào gold ───────────────────────────────────────────────────
         gold = gold.join(neighbor_feat, ["zone_id", "window_end"], "left")
 
-        gold = gold.withColumn(
-            "neighbor_requests_60m",
-            F.coalesce(F.col("neighbor_requests_60m"), F.lit(0.0)),
-        ).withColumn(
-            "neighbor_pickup_delay_mean",
-            F.coalesce(F.col("neighbor_pickup_delay_mean"), F.lit(0.0)),
+        gold = (
+            gold
+            .withColumn(
+                "neighbor_requests_60m",
+                F.coalesce(F.col("neighbor_requests_60m"), F.lit(0.0)),
+            )
+            .withColumn(
+                "neighbor_pickup_delay_mean",
+                F.coalesce(F.col("neighbor_pickup_delay_mean"), F.lit(0.0)),
+            )
+            .withColumn(
+                "num_neighbors",
+                F.coalesce(F.col("num_neighbors"), F.lit(0)),
+            )
         )
 
         # ── 7. IMBALANCE = (pickup_delay_mean^1.2 × requests_60m) / zone_area ─
@@ -625,7 +786,13 @@ def main():
             ).otherwise(F.lit(0.0))
         ).drop("zone_area_km2")
 
-        # ── 8. UPSERT vào gold/aggregated ────────────────────────────────────
+        # ── 8. TEMPORAL FEATURES ─────────────────────────────────────────────
+        # Thêm is_weekend, is_holiday, cyclical encodings từ window_end
+        # Đồng bộ notebook Section 2.6 add_temporal_features() — 15-min slide variant
+        # [THÊM] toàn bộ nhóm này so với phiên bản cũ
+        gold = add_temporal_features(gold)
+
+        # ── 9. UPSERT vào gold/aggregated ────────────────────────────────────
         if gold.isEmpty():
             return
 
