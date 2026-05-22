@@ -3,7 +3,7 @@ spark/jobs/request_bronze_to_silver.py
 ────────────────────────────────────────
 Bronze/request → Silver/request
 - Filter null trip_id / PULocationID / DOLocationID
-- Validate location range 1-265
+- Validate location range 1-263 (NYC TLC có 263 zones)
 - Dedup theo trip_id trong watermark 15 phút
 - KHÔNG có trip_miles / trip_time (đã chuyển sang dropoff event)
 """
@@ -71,8 +71,8 @@ def main():
             col("trip_id").isNotNull()
             & col("PULocationID").isNotNull()
             & col("DOLocationID").isNotNull()
-            & col("PULocationID").between(1, 265)
-            & col("DOLocationID").between(1, 265)
+            & col("PULocationID").between(1, 263)
+            & col("DOLocationID").between(1, 263)
         )
         .dropDuplicates(["trip_id"])
         .select(

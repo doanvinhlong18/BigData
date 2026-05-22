@@ -19,14 +19,27 @@ Upsert (MERGE) vì cùng window_end được tính lại khi late data đến.
 
 Metrics:
   Từ silver/complete (via batch_df):
-    - demand:  requests_60m, requests_15m, wav_requests, aar_requests,
-               shared_requests, uber_requests    ← window request_datetime
-    - dropoff: dropoff_60m, matched_rd           ← window dropoff_datetime
-    - trip:    avg_fare, avg_distance, avg_driver_pay, avg_tips
+    - demand:  requests_60m, wav_req, aar_req, share_req, uber_req
+               ← window request_datetime
+    - dropoff: dropoff_60m, matched_rd
+               ← window dropoff_datetime
+    - trip:    avg_fare, avg_distance, avg_driver_pay, avg_tips, avg_trip_time
+               ← window dropoff_datetime, trips_valid filter
   Từ silver/response (batch read, lọc theo window_end range):
-    - pickup:  pickup_60m, pickup_delay_mean, pickup_delay_std, matched_rp
+    - pickup:  pickup_60m, pickup_delay_mean, pickup_delay_std,
+               matched_rp, wav_match, share_match
+               ← window pickup_datetime
   Tổng hợp:
-    - neighbor: neighbor_requests_60m, neighbor_avg_requests_60m
+    - neighbor: neighbor_requests_60m, neighbor_pickup_delay_mean
+
+Thay đổi so với phiên bản cũ:
+  - Đổi tên wav_requests→wav_req, aar_requests→aar_req,
+    shared_requests→share_req, uber_requests→uber_req (đồng bộ notebook)
+  - Thêm avg_trip_time vào trip_stats
+  - Thêm wav_match, share_match từ silver/response
+  - Bỏ requests_15m, req_15m tumbling window (feature 15m đã loại bỏ)
+  - Bỏ neighbor_count, neighbor_avg_requests_60m
+  - Thêm neighbor_pickup_delay_mean (mean pickup_delay_mean của zone lân cận)
 
 ZONE_NEIGHBORS: dict hardcode 263 zones NYC.
 """
@@ -34,6 +47,7 @@ ZONE_NEIGHBORS: dict hardcode 263 zones NYC.
 import json
 import os
 import time
+import sys
 
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
@@ -49,6 +63,15 @@ from pyspark.sql.functions import (
     when,
     window,
 )
+
+# ZONE_AREAS_KM2 dùng để tính imbalance = (delay^1.2 × requests) / zone_area
+# Import từ feature_builder (single source of truth)
+sys.path.insert(0, "/opt/ml")
+try:
+    from feature_builder import ZONE_AREAS_KM2
+except ImportError:
+    # Fallback: default 1.0 km² cho tất cả zones nếu feature_builder không có
+    ZONE_AREAS_KM2 = {i: 1.0 for i in range(1, 264)}
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
 MINIO_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
@@ -373,7 +396,9 @@ def main():
         # NEIGHBOR_JSON là biến global — dùng trực tiếp, không cần broadcast
 
         # ── 1. DEMAND metrics — groupBy PULocationID + window request_datetime ─
-        demand_base = (
+        # Tên cột đồng bộ notebook: wav_req, aar_req, share_req, uber_req
+        # Bỏ requests_15m (feature 15m đã loại khỏi feature set)
+        demand_60m = (
             batch_df.filter("PULocationID >= 1 AND PULocationID <= 263")
             .groupBy(
                 col("PULocationID").alias("zone_id"),
@@ -381,49 +406,21 @@ def main():
             )
             .agg(
                 count("*").alias("requests_60m"),
-                count(when(col("wav_request_flag") == "Y", True)).alias("wav_requests"),
-                count(when(col("access_a_ride_flag") == "Y", True)).alias(
-                    "aar_requests"
-                ),
-                count(when(col("shared_request_flag") == "Y", True)).alias(
-                    "shared_requests"
-                ),
-                count(when(col("hvfhs_license_num") == "HV0003", True)).alias(
-                    "uber_requests"
-                ),
+                count(when(col("wav_request_flag") == "Y", True)).alias("wav_req"),
+                count(when(col("access_a_ride_flag") == "Y", True)).alias("aar_req"),
+                count(when(col("shared_request_flag") == "Y", True)).alias("share_req"),
+                count(when(col("hvfhs_license_num") == "HV0003", True)).alias("uber_req"),
             )
             .select(
                 col("zone_id"),
-                # col("w").getField("end") an toàn hơn col("w.end") trong mọi Spark 3.x
                 col("w").getField("end").alias("window_end"),
                 "requests_60m",
-                "wav_requests",
-                "aar_requests",
-                "shared_requests",
-                "uber_requests",
+                "wav_req",
+                "aar_req",
+                "share_req",
+                "uber_req",
             )
         )
-
-        # requests_15m: tính riêng qua tumbling window 15-min để tránh reference
-        # struct field bên trong agg() của sliding window (gây AnalysisException trên
-        # một số Spark 3.x khi resolver nhầm "w.end" là tên cột thay vì field access).
-        req_15m = (
-            batch_df.filter("PULocationID >= 1 AND PULocationID <= 263")
-            .groupBy(
-                col("PULocationID").alias("zone_id"),
-                window("request_datetime", SLIDE_DURATION).alias("w15"),
-            )
-            .agg(count("*").alias("requests_15m"))
-            .select(
-                col("zone_id"),
-                col("w15").getField("end").alias("window_end"),
-                "requests_15m",
-            )
-        )
-
-        demand_60m = demand_base.join(
-            req_15m, on=["zone_id", "window_end"], how="left"
-        ).fillna(0, subset=["requests_15m"])
 
         # ── 2. PICKUP metrics — batch-read silver/response ────────────────────
         # pickup_delay = pickup_datetime - request_datetime là chỉ số của giai
@@ -467,6 +464,9 @@ def main():
                 count("trip_id").alias("matched_rp"),
                 avg("pickup_delay").alias("pickup_delay_mean"),
                 F.coalesce(stddev("pickup_delay"), F.lit(0)).alias("pickup_delay_std"),
+                # wav_match / share_match từ silver/response (có wav_match_flag, share_match_flag)
+                count(when(col("wav_match_flag") == "Y", True)).alias("wav_match"),
+                count(when(col("share_match_flag") == "Y", True)).alias("share_match"),
             )
             .select(
                 col("zone_id"),
@@ -475,6 +475,8 @@ def main():
                 "pickup_delay_mean",
                 "pickup_delay_std",
                 "matched_rp",
+                "wav_match",
+                "share_match",
             )
         )
 
@@ -498,12 +500,14 @@ def main():
             )
         )
 
-        # ── 4. TRIP STATS — groupBy PULocationID + window pickup_datetime ──────
+        # ── 4. TRIP STATS — groupBy PULocationID + window dropoff_datetime ──────
+        # Filter trips_valid như notebook: trip_miles, trip_time, fare có giá trị hợp lệ
         trip_stats = (
             batch_df.filter(
-                col("trip_miles").between(0.1, 200)
-                & col("trip_time").between(60, 86400)
-                & col("base_passenger_fare").isNotNull()
+                col("trip_miles").between(0.3, 500)
+                & col("trip_time").between(200, 20000)
+                & col("base_passenger_fare").between(1, 1500)
+                & col("driver_pay").between(1, 1500)
             )
             .filter("PULocationID >= 1 AND PULocationID <= 263")
             .groupBy(
@@ -511,6 +515,7 @@ def main():
                 window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
             )
             .agg(
+                avg("trip_time").alias("avg_trip_time"),
                 avg("base_passenger_fare").alias("avg_fare"),
                 avg("trip_miles").alias("avg_distance"),
                 avg("driver_pay").alias("avg_driver_pay"),
@@ -519,6 +524,7 @@ def main():
             .select(
                 col("zone_id"),
                 col("w").getField("end").alias("window_end"),
+                "avg_trip_time",
                 "avg_fare",
                 "avg_distance",
                 "avg_driver_pay",
@@ -534,7 +540,7 @@ def main():
         )
 
         from pyspark.sql import functions as F
-        from pyspark.sql.types import StructType, StructField, IntegerType
+        from pyspark.sql.types import StructType, StructField, IntegerType, DoubleType
 
         # ── Build adjacency DataFrame ────────────────────────────────────────
         neighbor_map = json.loads(NEIGHBOR_JSON)
@@ -554,19 +560,27 @@ def main():
 
         adj_df = spark.createDataFrame(adj_rows, adj_schema)
 
-        # ── Compute neighbor demand ──────────────────────────────────────────
-        # FIX: F.broadcast() không tồn tại — broadcast hint phải đặt trực tiếp
-        # trong join thông qua F.broadcast(df) ở vị trí argument, không phải
-        # gán lại biến. Cú pháp đúng: join(F.broadcast(other), ...).
+        # ── Compute neighbor features ─────────────────────────────────────────
+        # neighbor_requests_60m     : tổng requests_60m của zone lân cận
+        # neighbor_pickup_delay_mean: mean pickup_delay_mean của zone lân cận
+        # Đồng bộ notebook cell 21 compute_neighbor_requests()
+        neighbor_base = demand_60m.select(
+            "zone_id", "window_end", "requests_60m"
+        ).join(
+            pickup_metrics.select("zone_id", "window_end", "pickup_delay_mean"),
+            on=["zone_id", "window_end"],
+            how="left",
+        )
+
         neighbor_feat = (
-            demand_60m.alias("d")
+            neighbor_base.alias("d")
             .join(
                 F.broadcast(adj_df).alias("a"),
                 F.col("d.zone_id") == F.col("a.zone_id"),
                 "left",
             )
             .join(
-                demand_60m.alias("n"),
+                neighbor_base.alias("n"),
                 (F.col("a.neighbor_zone_id") == F.col("n.zone_id"))
                 & (F.col("d.window_end") == F.col("n.window_end")),
                 "left",
@@ -574,31 +588,44 @@ def main():
             .groupBy("d.zone_id", "d.window_end")
             .agg(
                 F.sum("n.requests_60m").alias("neighbor_requests_60m"),
-                F.count("n.zone_id").alias("neighbor_count"),
+                F.mean("n.pickup_delay_mean").alias("neighbor_pickup_delay_mean"),
             )
         )
 
         # ── Join vào gold ───────────────────────────────────────────────────
         gold = gold.join(neighbor_feat, ["zone_id", "window_end"], "left")
 
-        # ── Fill + compute avg đúng ─────────────────────────────────────────
         gold = gold.withColumn(
             "neighbor_requests_60m",
             F.coalesce(F.col("neighbor_requests_60m"), F.lit(0.0)),
+        ).withColumn(
+            "neighbor_pickup_delay_mean",
+            F.coalesce(F.col("neighbor_pickup_delay_mean"), F.lit(0.0)),
         )
 
-        gold = gold.withColumn(
-            "neighbor_count", F.coalesce(F.col("neighbor_count"), F.lit(0))
+        # ── 7. IMBALANCE = (pickup_delay_mean^1.2 × requests_60m) / zone_area ─
+        # Đồng bộ feature_builder.compute_imbalance() và notebook cell 25
+        # Broadcast zone_area map để tránh shuffle
+        zone_area_rows = [(int(z), float(a)) for z, a in ZONE_AREAS_KM2.items()]
+        zone_area_df = spark.createDataFrame(
+            zone_area_rows,
+            StructType([
+                StructField("zone_id", IntegerType(), False),
+                StructField("zone_area_km2", DoubleType(), False),
+            ])
         )
-
+        gold = gold.join(F.broadcast(zone_area_df), on="zone_id", how="left")
         gold = gold.withColumn(
-            "neighbor_avg_requests_60m",
+            "imbalance",
             F.when(
-                F.col("neighbor_count") > 0,
-                F.col("neighbor_requests_60m") / F.col("neighbor_count"),
-            ).otherwise(0.0),
-        )
-        # ── 7. UPSERT vào gold/aggregated ────────────────────────────────────
+                F.col("pickup_delay_mean").isNotNull() & F.col("requests_60m").isNotNull(),
+                (F.col("pickup_delay_mean").cast("double") ** 1.2)
+                * F.col("requests_60m")
+                / F.coalesce(F.col("zone_area_km2"), F.lit(1.0))
+            ).otherwise(F.lit(0.0))
+        ).drop("zone_area_km2")
+
+        # ── 8. UPSERT vào gold/aggregated ────────────────────────────────────
         if gold.isEmpty():
             return
 

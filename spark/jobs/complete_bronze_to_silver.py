@@ -16,8 +16,11 @@ Schema silver/complete:
   wav_request_flag, access_a_ride_flag, shared_request_flag,
   trip_miles, trip_time,
   base_passenger_fare, driver_pay, tips, tolls, bcf,
-  sales_tax, congestion_surcharge, airport_fee, cbd_congestion_fee,
-  shared_match_flag, wav_match_flag
+  sales_tax, congestion_surcharge, airport_fee, cbd_congestion_fee
+
+Lưu ý: shared_match_flag và wav_match_flag KHÔNG có ở bronze/dropoff —
+  chúng nằm ở bronze/pickup → silver/response. silver_to_gold đọc
+  wav_match/share_match từ silver/response, không từ silver/complete.
 """
 
 import os
@@ -191,9 +194,6 @@ def main():
         "congestion_surcharge",
         "airport_fee",
         "cbd_congestion_fee",
-        # match flags
-        "shared_match_flag",
-        "wav_match_flag",
     )
 
     # ───────────────────────────────────────────────

@@ -161,6 +161,8 @@ def main():
         )
 
         # ── PICKUP ───────────────────────────────────────────────────────────
+        # Đổi shared_match_flag → share_match_flag để đồng bộ tên với notebook
+        # và silver_to_gold (silver/response dùng share_match_flag)
         pu = batch_ts.filter(col("event_type") == "pickup").select(
             "trip_id",
             to_timestamp(col("pickup_datetime")).alias("pickup_datetime"),
@@ -169,7 +171,7 @@ def main():
             "year",
             "month",
             "day",
-            "shared_match_flag",
+            col("shared_match_flag").alias("share_match_flag"),
             "wav_match_flag",
         )
         (
