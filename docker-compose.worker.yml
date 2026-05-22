@@ -6,9 +6,9 @@ version: "3.8"
 # HOW IT WORKS (Windows Docker Desktop + Radmin/Tailscale VPN)
 # ─────────────────────────────────────────────────────────────
 # Problem: Docker containers use an internal bridge IP (172.x.x.x)
-# that is NOT routable from the master machine via VPN. The Spark Worker
-# must bind to an address that exists inside the container, while the
-# Master/Driver must resolve the same worker name to this host's VPN IP.
+# that is NOT routable from the master machine via VPN. When a Spark
+# Worker registers with the Master, it must advertise an IP that the
+# Master can actually reach back on — the VPN IP of the Windows host.
 #
 # Solution:
 #   1. The worker container hostname is spark-worker-${WORKER_ID}.
@@ -17,8 +17,8 @@ version: "3.8"
 #   2. On the master machine, map spark-worker-${WORKER_ID} to WORKER_IP
 #      in docker-compose.master.yml (extra_hosts on spark-master).
 #      Then Spark Master/Driver resolve that same hostname to the VPN IP.
-#   3. Published ports (8081/8085/7337) let Docker Desktop forward
-#      WORKER_IP:PORT connections from the master to this container.
+#   3. Published ports (8081/8085/7337-7360) → Docker Desktop forwards
+#      WORKER_IP:PORT connections from the master to the container.
 #
 # Result: Master sees Worker at spark-worker-A:8085, resolves it to
 # WORKER_IP, and Docker Desktop forwards the connection to the container.
@@ -46,7 +46,7 @@ services:
         --webui-port 8081
         spark://${MASTER_IP}:7077
     environment:
-      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-12G}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-10g}
       SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-8}
       SPARK_WORKER_WEBUI_PORT: 8081
       # Fixed RPC port so Docker Desktop can forward it predictably.
@@ -63,10 +63,11 @@ services:
       # S3A credentials — worker writes Parquet/Delta to MinIO on master
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+
     ports:
       - "8081:8081"   # Spark Worker Web UI (also scraped by Prometheus)
       - "8085:8085"   # Spark Worker RPC (Master → Worker for executor launch)
-      - "7337:7337"   # Block Manager (shuffle/broadcast between driver & executors)
+      - "7337-7360:7337-7360"   # Block Manager (shuffle/broadcast between driver & executors)
     volumes:
       # Spark jobs must exist on the worker machine too (synced via git/rsync)
       - ./spark/jobs:/opt/spark/app/spark/jobs:ro
@@ -89,6 +90,43 @@ services:
       retries: 3
       start_period: 60s
 
+  # ── NODE EXPORTER ──────────────────────────────────────────────
+  # Exposes worker machine's host metrics to Prometheus on the master.
+  # Prometheus scrapes WORKER_IP:9100 — no need for the master to know
+  # about Docker internals on the worker.
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter-worker
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    volumes:
+      - /:/host:ro,rslave
+
+  # ── cADVISOR (optional) ────────────────────────────────────────
+  # Container resource metrics for worker machine.
+  # Prometheus scrapes WORKER_IP:8090.
+  # Comment out if worker RAM is tight.
+  cadvisor-worker:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: cadvisor-worker
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "8090:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - "--port=8080"
+      - "--housekeeping_interval=15s"
+      - "--docker_only=true"
 
 networks:
   default:
