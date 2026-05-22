@@ -1,44 +1,94 @@
 version: "3.8"
 
 # ================================================================
-# docker-compose.worker.yml — Machine 2 + 3 (Spark Workers)
-# Chạy trên mỗi máy worker:
-#   WORKER_ID=A docker-compose -f docker-compose.worker.yml up -d
-#   WORKER_ID=B docker-compose -f docker-compose.worker.yml up -d
+# docker-compose.worker.yml — Worker Machine (Machine 2+)
+#
+# HOW IT WORKS (Windows Docker Desktop + Radmin/Tailscale VPN)
+# ─────────────────────────────────────────────────────────────
+# Problem: Docker containers use an internal bridge IP (172.x.x.x)
+# that is NOT routable from the master machine via VPN. The Spark Worker
+# must bind to an address that exists inside the container, while the
+# Master/Driver must resolve the same worker name to this host's VPN IP.
+#
+# Solution:
+#   1. The worker container hostname is spark-worker-${WORKER_ID}.
+#      Inside the container, that hostname resolves to the container IP,
+#      so Spark can bind successfully.
+#   2. On the master machine, map spark-worker-${WORKER_ID} to WORKER_IP
+#      in docker-compose.master.yml (extra_hosts on spark-master).
+#      Then Spark Master/Driver resolve that same hostname to the VPN IP.
+#   3. Published ports (8081/8085/7337) let Docker Desktop forward
+#      WORKER_IP:PORT connections from the master to this container.
+#
+# Result: Master sees Worker at spark-worker-A:8085, resolves it to
+# WORKER_IP, and Docker Desktop forwards the connection to the container.
+#
+# Usage:
+#   On worker machine, set WORKER_IP in .env to this machine's VPN IP.
+#   WORKER_ID=A docker compose -f docker-compose.worker.yml up -d
 # ================================================================
 
 services:
+
+  # ── SPARK WORKER ───────────────────────────────────────────────
   spark-worker:
     image: bigdata-spark:latest
     container_name: spark-worker-${WORKER_ID:-A}
+    hostname: spark-worker-${WORKER_ID:-A}
     restart: unless-stopped
-    command: >
-      spark-class org.apache.spark.deploy.worker.Worker
-      spark://${MASTER_IP}:7077
+    command:
+      - bash
+      - -lc
+      - >
+        exec spark-class org.apache.spark.deploy.worker.Worker
+        --host spark-worker-${WORKER_ID:-A}
+        --port 8085
+        --webui-port 8081
+        spark://${MASTER_IP}:7077
     environment:
-      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-13G}
-      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-10}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-12G}
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-8}
       SPARK_WORKER_WEBUI_PORT: 8081
+      # Fixed RPC port so Docker Desktop can forward it predictably.
+      # The Master contacts the Worker at WORKER_IP:8085 to launch executors.
+      SPARK_WORKER_PORT: "8085"
       SPARK_DAEMON_MEMORY: 512m
-      # S3A credentials — worker cần để ghi MinIO trên master
+      # Spark advertises this stable hostname. It must resolve to WORKER_IP
+      # from the master container, and to the container IP inside this worker.
+      SPARK_LOCAL_HOSTNAME: spark-worker-${WORKER_ID:-A}
+      SPARK_PUBLIC_DNS: spark-worker-${WORKER_ID:-A}
+      # Same hostname for executor JVMs so the driver on master can reach them.
+      SPARK_EXECUTOR_OPTS: >-
+        -Dspark.local.hostname=spark-worker-${WORKER_ID:-A}
+      # S3A credentials — worker writes Parquet/Delta to MinIO on master
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
     ports:
-      - "8081:8081"
+      - "8081:8081"   # Spark Worker Web UI (also scraped by Prometheus)
+      - "8085:8085"   # Spark Worker RPC (Master → Worker for executor launch)
+      - "7337:7337"   # Block Manager (shuffle/broadcast between driver & executors)
     volumes:
+      # Spark jobs must exist on the worker machine too (synced via git/rsync)
       - ./spark/jobs:/opt/spark/app/spark/jobs:ro
-    # Resolve hostnames về IP master — quan trọng
+      # Override the baked-in spark-defaults.conf with the repo version
+      # so blockManager.port and driver.bindAddress are always in sync
+      - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
     extra_hosts:
+      # Resolve master-side service hostnames to the master's VPN IP.
+      # This lets Spark config and S3A use stable hostnames (minio, kafka…)
+      # without hardcoding IPs in application code.
       - "spark-master:${MASTER_IP}"
       - "kafka:${MASTER_IP}"
       - "minio:${MASTER_IP}"
       - "postgres:${MASTER_IP}"
+      - "mlflow:${MASTER_IP}"
     healthcheck:
       test: curl -f http://localhost:8081
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 60s
+
 
 networks:
   default:
