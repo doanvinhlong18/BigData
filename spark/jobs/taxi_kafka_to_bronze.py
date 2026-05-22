@@ -89,6 +89,7 @@ def main():
         .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -99,8 +100,12 @@ def main():
         .option("subscribe", TOPIC)
         .option("startingOffsets", "earliest")
         .option("failOnDataLoss", "false")
+        # Giới hạn số message mỗi trigger để batch đầu không quá lớn
+        # (tránh timeout 600s khi có nhiều backlog từ earliest)
+        .option("maxOffsetsPerTrigger", 50000)
         .load()
         .selectExpr("CAST(value AS STRING) as json_str", "timestamp as kafka_ts")
+
     )
 
     parsed = raw.select(
@@ -109,7 +114,18 @@ def main():
     ).select("d.*", "kafka_ts")
 
     def write_batch(batch_df, batch_id):
-        if batch_df.isEmpty():
+        # Cache batch_df TRƯỚC KHI làm bất kỳ action nào.
+        # Không cache → mỗi action (count, write_req, write_pu, write_do)
+        # đều re-scan Kafka từ đầu → 4x scan, batch đầu mất ~148s.
+        # Với cache → scan 1 lần, lưu vào executor memory → ~40s.
+        batch_df.cache()
+
+        # ── DIAGNOSTIC LOGGING ───────────────────────────────────────────────
+        row_count = batch_df.count()
+        print(f"[write_batch] batch_id={batch_id} | rows={row_count}", flush=True)
+        if row_count == 0:
+            print(f"[write_batch] batch_id={batch_id} EMPTY — skip write", flush=True)
+            batch_df.unpersist()
             return
 
         # ── EVENT_TIME → partition columns ───────────────────────────────────
@@ -136,14 +152,13 @@ def main():
             "month",
             "day",
         )
-        if not req.isEmpty():
-            (
-                req.write.format("delta")
-                .mode("append")
-                .partitionBy("year", "month", "day")
-                .option("mergeSchema", "true")
-                .save(BRONZE_REQUEST)
-            )
+        (
+            req.write.format("delta")
+            .mode("append")
+            .partitionBy("year", "month", "day")
+            .option("mergeSchema", "true")
+            .save(BRONZE_REQUEST)
+        )
 
         # ── PICKUP ───────────────────────────────────────────────────────────
         pu = batch_ts.filter(col("event_type") == "pickup").select(
@@ -157,14 +172,13 @@ def main():
             "shared_match_flag",
             "wav_match_flag",
         )
-        if not pu.isEmpty():
-            (
-                pu.write.format("delta")
-                .mode("append")
-                .partitionBy("year", "month", "day")
-                .option("mergeSchema", "true")
-                .save(BRONZE_PICKUP)
-            )
+        (
+            pu.write.format("delta")
+            .mode("append")
+            .partitionBy("year", "month", "day")
+            .option("mergeSchema", "true")
+            .save(BRONZE_PICKUP)
+        )
 
         # ── DROPOFF ──────────────────────────────────────────────────────────
         do = batch_ts.filter(col("event_type") == "dropoff").select(
@@ -186,14 +200,16 @@ def main():
             "month",
             "day",
         )
-        if not do.isEmpty():
-            (
-                do.write.format("delta")
-                .mode("append")
-                .partitionBy("year", "month", "day")
-                .option("mergeSchema", "true")
-                .save(BRONZE_DROPOFF)
-            )
+        (
+            do.write.format("delta")
+            .mode("append")
+            .partitionBy("year", "month", "day")
+            .option("mergeSchema", "true")
+            .save(BRONZE_DROPOFF)
+        )
+
+        # Giải phóng cache sau khi tất cả 3 bảng đã được ghi
+        batch_df.unpersist()
 
     query = (
         parsed.writeStream.foreachBatch(write_batch)

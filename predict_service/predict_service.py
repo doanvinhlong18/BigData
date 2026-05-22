@@ -88,6 +88,7 @@ MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 GOLD_AGG_PATH = os.getenv("GOLD_AGG_PATH", "s3://gold/aggregated")
 WEATHER_PARQUET = os.getenv("WEATHER_PARQUET_PATH", "s3://weather/parquet")
+WEATHER_PARQUET_LOCAL = os.getenv("WEATHER_PARQUET_LOCAL", "/datasets/parquet_by_day")
 WEATHER_CSV = os.getenv("WEATHER_CSV_PATH", "/datasets/weather/2526.csv")
 
 PG_HOST = os.getenv("POSTGRES_HOST", "postgres")
@@ -251,8 +252,11 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
         needed.add((pt + pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
 
     import pyarrow.dataset as ds
+    import pyarrow.parquet as pq
 
     frames = []
+
+    # 1. Thử MinIO S3 (partition date=YYYY-MM-DD/)
     for d in sorted(needed):
         try:
             dataset = ds.dataset(
@@ -271,12 +275,33 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
         wdf["window_end"] = pd.to_datetime(wdf["window_end"])
         return wdf
 
+    # 2. Thử local parquet files: datasets/parquet_by_day/{date}.parquet
+    local_frames = []
+    for d in sorted(needed):
+        fp = os.path.join(WEATHER_PARQUET_LOCAL, f"{d}.parquet")
+        if os.path.exists(fp):
+            try:
+                part = pq.read_table(fp).to_pandas()
+                if not part.empty:
+                    local_frames.append(part)
+                    log.debug(f"[WEATHER] Loaded local parquet {fp}")
+            except Exception as e:
+                log.warning(f"[WEATHER] Cannot read {fp}: {e}")
+
+    if local_frames:
+        wdf = pd.concat(local_frames, ignore_index=True)
+        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+        log.info(f"[WEATHER] Loaded {len(local_frames)} local parquet file(s) for {slot_end}")
+        return wdf
+
+    # 3. CSV fallback
     if os.path.exists(WEATHER_CSV):
-        log.warning("[WEATHER] Parquet not found, CSV fallback")
+        log.warning("[WEATHER] Parquet not found — CSV fallback")
         wdf = pd.read_csv(WEATHER_CSV, parse_dates=["window_end"])
         wdf["window_end"] = pd.to_datetime(wdf["window_end"])
         return wdf[wdf["window_end"].dt.strftime("%Y-%m-%d").isin(needed)]
 
+    log.warning("[WEATHER] No weather data found (S3, local parquet, or CSV) — running without weather features")
     return pd.DataFrame()
 
 

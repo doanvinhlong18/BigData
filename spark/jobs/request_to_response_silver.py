@@ -14,6 +14,8 @@ Schema silver/response:
 """
 
 import os
+import time
+from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.functions import col, to_timestamp
@@ -30,6 +32,23 @@ WATERMARK_REQ = "30 minutes"
 WATERMARK_PICKUP = "15 minutes"
 
 
+def wait_for_source(spark, path, timeout=600):
+    """Chờ Delta table tồn tại trước khi readStream."""
+    print(f"[wait_for_source] Chờ {path} ...", flush=True)
+    elapsed = 0
+    while elapsed < timeout:
+        try:
+            if DeltaTable.isDeltaTable(spark, path):
+                print(f"[wait_for_source] ✅ {path} sẵn sàng ({elapsed}s)", flush=True)
+                return
+        except Exception as e:
+            print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
+        time.sleep(10)
+        elapsed += 10
+        print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)
+    raise TimeoutError(f"Source {path} không xuất hiện sau {timeout}s")
+
+
 def main():
     spark = (
         SparkSession.builder.appName("request_to_response_silver")
@@ -43,11 +62,16 @@ def main():
         .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         # Stream-stream join cần shuffle partitions nhỏ để tránh spill
         .config("spark.sql.shuffle.partitions", "8")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
+
+    # Chờ cả 2 source sẵn sàng (jobs submit đồng thời)
+    wait_for_source(spark, SILVER_REQUEST)
+    wait_for_source(spark, BRONZE_PICKUP)
 
     # ── Stream 1: Silver/request ──────────────────────────────────────────────
     req_stream = (
@@ -87,6 +111,8 @@ def main():
             "pickup_datetime",
             "on_scene_datetime",
             col("PULocationID").alias("confirmed_PU"),
+            "shared_match_flag",
+            "wav_match_flag",
         )
     )
 
@@ -116,6 +142,8 @@ def main():
         "wav_request_flag",
         "access_a_ride_flag",
         "shared_request_flag",
+        "shared_match_flag",
+        "wav_match_flag",
     )
 
     query = (

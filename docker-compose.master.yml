@@ -40,11 +40,11 @@ services:
       - zookeeper-data:/var/lib/zookeeper/data
       - zookeeper-logs:/var/lib/zookeeper/log
     healthcheck:
-      test: echo ruok | nc localhost 2181 | grep imok
+      test: [ "CMD-SHELL", "nc -z localhost 2181" ]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 60s
 
   # ── KAFKA ──────────────────────────────────────────────────────
   kafka:
@@ -86,7 +86,7 @@ services:
       - kafka-data:/var/lib/kafka/data
       - ./monitoring/kafka-exporter:/opt/kafka-jmx-exporter:ro
     healthcheck:
-      test: kafka-broker-api-versions --bootstrap-server localhost:9092
+      test: ["CMD-SHELL", "unset KAFKA_OPTS JMX_PORT KAFKA_JMX_PORT && kafka-broker-api-versions --bootstrap-server localhost:9092"]
       interval: 30s
       timeout: 15s
       retries: 5
@@ -99,36 +99,37 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      "
-      kafka-topics --create --if-not-exists \
-        --bootstrap-server kafka:9092 \
-        --topic nyc_taxi_events \
-        --partitions 3 \
-        --replication-factor 1 \
-        --config retention.ms=172800000
-      echo 'Topics OK'
-      kafka-topics --list --bootstrap-server kafka:9092
-      "
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        kafka-topics --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic nyc_taxi_events \
+          --partitions 3 \
+          --replication-factor 1 \
+          --config retention.ms=172800000 \
+        && echo "✅ Topics OK" \
+        && kafka-topics --list --bootstrap-server kafka:9092
     restart: on-failure
 
   # ── KAFKA LAG EXPORTER ─────────────────────────────────────────
-  kafka-lag-exporter:
-    image: lightbend/kafka-lag-exporter:0.8.2
-    container_name: kafka-lag-exporter
-    restart: unless-stopped
-    depends_on:
-      kafka:
-        condition: service_healthy
-    environment:
-      KAFKA_LAG_EXPORTER_KAFKA_BROKERS: "kafka:9092"
-      KAFKA_LAG_EXPORTER_PORT: 8000
-      KAFKA_LAG_EXPORTER_POLL_INTERVAL: "30 seconds"
-    ports:
-      - "8099:8000"
-    volumes:
-      - ./monitoring/kafka-exporter/lag-exporter.conf:/opt/docker/conf/application.conf:ro
+  # Image không còn được maintain, comment out vì chỉ là monitoring optional
+  # kafka-lag-exporter:
+  #   image: lightbend/kafka-lag-exporter:0.8.2
+  #   container_name: kafka-lag-exporter
+  #   restart: unless-stopped
+  #   depends_on:
+  #     kafka:
+  #       condition: service_healthy
+  #   environment:
+  #     KAFKA_LAG_EXPORTER_KAFKA_BROKERS: "kafka:9092"
+  #     KAFKA_LAG_EXPORTER_PORT: 8000
+  #     KAFKA_LAG_EXPORTER_POLL_INTERVAL: "30 seconds"
+  #   ports:
+  #     - "8099:8000"
+  #   volumes:
+  #     - ./monitoring/kafka-exporter/lag-exporter.conf:/opt/docker/conf/application.conf:ro
 
   # ── MINIO ──────────────────────────────────────────────────────
   minio:
@@ -195,11 +196,24 @@ services:
       # S3A credentials for spark-submit launched from this container
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+      PYSPARK_PYTHON: /usr/bin/python3
+      PYSPARK_DRIVER_PYTHON: /usr/bin/python3
+      # Driver (trên spark-master container) dùng internal Kafka hostname
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Executor (trên spark-worker-A máy khác) cần external address qua VPN
+      # Nếu chỉ 1 máy (local), để giống KAFKA_BOOTSTRAP_SERVERS
+      KAFKA_BOOTSTRAP_SERVERS_EXECUTOR: ${MASTER_IP}:29092
     ports:
       - "7077:7077"   # Spark Master RPC — workers connect here
       - "8080:8080"   # Spark Master Web UI
-      - "4040:4040"   # Spark Driver Web UI (client-mode driver)
-      - "7337:7337"   # Driver Block Manager — remote executors reach driver for shuffle
+      - "4040-4050:4040-4050"  # Spark Driver Web UI (job 1→4040, job 2→4041, ... job 5→4044)
+      - "4100-4120:4100-4120"  # Driver RPC (CoarseGrainedScheduler) — executor gọi về đây
+                                # spark.driver.port=4100, tách khỏi UI range 4040-4044
+                                # 5 jobs → 4100-4104; range 4100-4120 dự phòng maxRetries=20
+      - "7337-7360:7337-7360"  # Driver Block Manager — mỗi job dùng 1 port
+                                 # 5 jobs đồng thời → 7337, 7338, 7339, 7340, 7341
+                                 # port.maxRetries=20 → publish 7337-7360 dự phòng
+
     volumes:
       - ./spark/jobs:/opt/spark/app/spark/jobs
       - ./scripts:/opt/spark/app/scripts
@@ -223,37 +237,40 @@ services:
   #
   # Để BẬT: bỏ comment toàn bộ block dưới đây
   # Để TẮT (khi có máy worker riêng): comment lại hoặc xóa
-  spark-worker:
-    <<: *spark-base
-    container_name: spark-worker-local
-    restart: unless-stopped
-    depends_on:
-      spark-master:
-        condition: service_healthy
-    command: spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
-    environment:
-      SPARK_WORKER_MEMORY: 5g
-      SPARK_WORKER_CORES: 4
-      SPARK_WORKER_WEBUI_PORT: 8082
-      SPARK_WORKER_PORT: "8086"   # fixed RPC port — avoids random port on restart
-      SPARK_DAEMON_MEMORY: 512m
-      # Bind to all interfaces; same Docker network as master so no VPN needed
-      SPARK_LOCAL_IP: "0.0.0.0"
-      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
-    ports:
-      - "8082:8082"   # Worker Web UI
-      - "8086:8086"   # Worker RPC
-    volumes:
-      - ./spark/jobs:/opt/spark/app/spark/jobs:ro
-      - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
-    mem_limit: 6g
-    healthcheck:
-      test: curl -f http://localhost:8082
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+  # spark-worker-local: BẬT khi worker machine chưa kết nối
+  # CẢNH BÁO: SPARK_LOCAL_IP: "0.0.0.0" gây lỗi task routing (executor register là 0.0.0.0).
+  # Nếu cần, đổi sang: SPARK_LOCAL_IP: spark-worker-local
+  #
+  # spark-worker-local:
+  #   <<: *spark-base
+  #   container_name: spark-worker-local
+  #   restart: unless-stopped
+  #   depends_on:
+  #     spark-master:
+  #       condition: service_healthy
+  #   command: spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+  #   environment:
+  #     SPARK_WORKER_MEMORY: 6g
+  #     SPARK_WORKER_CORES: 6
+  #     SPARK_WORKER_WEBUI_PORT: 8082
+  #     SPARK_WORKER_PORT: "8086"
+  #     SPARK_DAEMON_MEMORY: 512m
+  #     SPARK_LOCAL_IP: spark-worker-local   # dùng hostname, KHÔNG dùng 0.0.0.0
+  #     AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+  #     AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+  #   ports:
+  #     - "8082:8082"
+  #     - "8086:8086"
+  #   volumes:
+  #     - ./spark/jobs:/opt/spark/app/spark/jobs:ro
+  #     - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+  #   mem_limit: 7g
+  #   healthcheck:
+  #     test: curl -f http://localhost:8082
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 30s
 
   # ── POSTGRES ───────────────────────────────────────────────────
   # Shared cluster cho: Airflow metadata, MLflow experiments, predictions
@@ -326,6 +343,7 @@ services:
         POSTGRES_USER: ${POSTGRES_USER}
         POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
         WEATHER_PARQUET_PATH: s3://weather/parquet
+        WEATHER_PARQUET_LOCAL: /opt/airflow/datasets/parquet_by_day
         WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
         SPARK_MASTER_URL: ${SPARK_MASTER_URL}
         SILVER_WEATHER: s3a://silver/weather
@@ -340,6 +358,7 @@ services:
         - ./airflow/dags:/opt/airflow/dags
         - ./ml:/opt/airflow/ml
         - ./spark/jobs:/opt/airflow/spark_jobs
+        - ./datasets/parquet_by_day:/opt/airflow/datasets/parquet_by_day:ro
       # Command gọn — không còn pip install
       command: >
         bash -c "
@@ -397,6 +416,7 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       GOLD_AGG_PATH: s3://gold/aggregated
       WEATHER_PARQUET_PATH: s3://weather/parquet
+      WEATHER_PARQUET_LOCAL: /datasets/parquet_by_day
       WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
@@ -431,19 +451,17 @@ services:
         condition: service_healthy
     environment:
       <<: *minio-env
-    command: >
-      bash -c "
-        pip install --quiet mlflow boto3 psycopg2-binary &&
-        mlflow server
-          --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
-          --default-artifact-root s3://mlflow-artifacts/
-          --host 0.0.0.0
-          --port 5000
-      "
+    command: ["bash", "-c", "pip install --no-cache-dir --quiet mlflow boto3 psycopg2-binary && exec mlflow server --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow --default-artifact-root s3://mlflow-artifacts/ --host 0.0.0.0 --port 5000"]
     ports:
       - "5000:5000"
     healthcheck:
-      test: curl -f http://localhost:5000/health
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:5000')"
+        ]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -531,7 +549,7 @@ services:
       - "--path.rootfs=/host"
       - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
     volumes:
-      - /:/host:ro,rslave
+      - /:/host:ro
 
   # ── BLACKBOX EXPORTER ──────────────────────────────────────────
   blackbox-exporter:
@@ -555,11 +573,12 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    command: python unified_producer.py request
+    command: python -u unified_producer.py request
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SPEED_FACTOR: ${SPEED_FACTOR}
       DATASET_PATH: /datasets
+      PYTHONUNBUFFERED: "1"
     volumes:
       - ${DATASET_PATH}:/datasets:ro
 
@@ -572,11 +591,12 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    command: python unified_producer.py pickup
+    command: python -u unified_producer.py pickup
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SPEED_FACTOR: ${SPEED_FACTOR}
       DATASET_PATH: /datasets
+      PYTHONUNBUFFERED: "1"
     volumes:
       - ${DATASET_PATH}:/datasets:ro
 
@@ -589,11 +609,12 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    command: python unified_producer.py dropoff
+    command: python -u unified_producer.py dropoff
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SPEED_FACTOR: ${SPEED_FACTOR}
       DATASET_PATH: /datasets
+      PYTHONUNBUFFERED: "1"
     volumes:
       - ${DATASET_PATH}:/datasets:ro
 

@@ -43,7 +43,7 @@ services:
           spark://${MASTER_IP}:7077
       "
     environment:
-      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-12G}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-10g}
       SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-8}
       SPARK_WORKER_WEBUI_PORT: 8081
       # Fixed RPC port so Docker Desktop can forward it predictably.
@@ -62,10 +62,12 @@ services:
       # S3A credentials — worker writes Parquet/Delta to MinIO on master
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      PYSPARK_PYTHON: /usr/bin/python3
+      PYSPARK_DRIVER_PYTHON: /usr/bin/python3
     ports:
       - "8081:8081"   # Spark Worker Web UI (also scraped by Prometheus)
       - "8085:8085"   # Spark Worker RPC (Master → Worker for executor launch)
-      - "7337:7337"   # Block Manager (shuffle/broadcast between driver & executors)
+      - "7337-7360:7337-7360"   # Block Manager (shuffle/broadcast between driver & executors)
     volumes:
       # Spark jobs must exist on the worker machine too (synced via git/rsync)
       - ./spark/jobs:/opt/spark/app/spark/jobs:ro

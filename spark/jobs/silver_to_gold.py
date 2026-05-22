@@ -33,8 +33,8 @@ ZONE_NEIGHBORS: dict hardcode 263 zones NYC.
 
 import json
 import os
+import time
 
-import pandas as pd
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
@@ -314,20 +314,25 @@ ZONE_NEIGHBORS = {
     248: [182, 212],
     249: [113, 158],
     250: [],
-    251: [],
-    252: [15, 53],
-    253: [92],
-    254: [81],
-    255: [80, 112],
-    256: [],
-    257: [],
-    258: [],
-    259: [],
-    260: [83],
-    261: [13, 87],
-    262: [],
-    263: [],
+256: [],
 }
+
+def wait_for_source(spark, path, timeout=600):
+    """Chờ Delta table tồn tại trước khi readStream."""
+    print(f"[wait_for_source] Chờ {path} ...", flush=True)
+    elapsed = 0
+    while elapsed < timeout:
+        try:
+            if DeltaTable.isDeltaTable(spark, path):
+                print(f"[wait_for_source] ✅ {path} sẵn sàng ({elapsed}s)", flush=True)
+                return
+        except Exception as e:
+            print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
+        time.sleep(10)
+        elapsed += 10
+        print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)
+    raise TimeoutError(f"Source {path} không xuất hiện sau {timeout}s")
+
 
 NEIGHBOR_JSON = json.dumps(ZONE_NEIGHBORS)
 
@@ -345,9 +350,13 @@ def main():
         .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
+
+    # Chờ source sẵn sàng (jobs submit đồng thời)
+    wait_for_source(spark, SILVER_COMPLETE)
 
     # ── Source: Silver/complete stream ────────────────────────────────────────
     # Watermark trên dropoff_datetime (event muộn nhất, luôn có) để drive window

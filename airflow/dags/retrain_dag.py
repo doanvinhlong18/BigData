@@ -7,7 +7,7 @@ Training flow:
   load_and_prepare → [train_model_a ‖ train_model_b] → compare_and_stage
 """
 
-import os, sys
+import os, sys, glob
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
@@ -32,6 +32,9 @@ MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 WEATHER_CSV = os.getenv(
     "WEATHER_CSV_PATH", "/datasets/weather/2526.csv"
 )  # FIX: path đúng
+WEATHER_PARQUET_LOCAL = os.getenv(
+    "WEATHER_PARQUET_LOCAL", "/opt/airflow/datasets/parquet_by_day"
+)
 GOLD_AGG_PATH = "s3://gold/aggregated"
 TRAIN_PATH = "/tmp/retrain_train.parquet"
 VAL_PATH = "/tmp/retrain_val.parquet"
@@ -51,14 +54,46 @@ TRAIN_RATIO = 0.9
 N_CLASSES = 6
 
 
+def _load_weather_local() -> pd.DataFrame:
+    """
+    Đọc tất cả file .parquet trong WEATHER_PARQUET_LOCAL (parquet_by_day/).
+    Mỗi file là 1 ngày, tên file: YYYY-MM-DD.parquet.
+    Fallback sang CSV nếu folder trống.
+    """
+    import pyarrow.parquet as pq
+
+    files = sorted(glob.glob(os.path.join(WEATHER_PARQUET_LOCAL, "*.parquet")))
+    if files:
+        frames = []
+        for fp in files:
+            try:
+                frames.append(pq.read_table(fp).to_pandas())
+            except Exception as e:
+                print(f"[WARN] Cannot read weather parquet {fp}: {e}")
+        if frames:
+            wdf = pd.concat(frames, ignore_index=True)
+            wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+            print(f"[WEATHER] Loaded {len(frames)} parquet file(s) from {WEATHER_PARQUET_LOCAL}")
+            return wdf
+
+    # Fallback sang CSV
+    if os.path.exists(WEATHER_CSV):
+        print(f"[WEATHER] Parquet not found — CSV fallback: {WEATHER_CSV}")
+        wdf = pd.read_csv(WEATHER_CSV, parse_dates=["window_end"])
+        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+        return wdf
+
+    print("[WARN] No weather data found — training without weather features")
+    return pd.DataFrame()
+
+
 def task_load_and_prepare(**ctx):
     mlflow.set_tracking_uri(MLFLOW_URI)
     dt = DeltaTable(GOLD_AGG_PATH, storage_options=STORAGE_OPTS)
     gold = dt.to_pandas()
     gold["window_end"] = pd.to_datetime(gold["window_end"])
 
-    wdf = pd.read_csv(WEATHER_CSV, parse_dates=["window_end"])
-    wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+    wdf = _load_weather_local()
 
     feat_df, quantiles = FeatureBuilder.build_training_data(
         gold_df=gold,
