@@ -35,7 +35,7 @@ log = logging.getLogger("upload_model")
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://192.168.10.1:5000")
 MINIO_ENDPOINT = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://192.168.10.1:9000")
 OUTPUT_DIR = (
-    r"C:\D\nam4_ki2\BigData\datasets\lgb_output"  # thư mục kết quả train_lgb.py
+    r"D:\BigData-master\BigData\datasets\lgb_output"  # thư mục kết quả train_lgb.py
 )
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -45,7 +45,7 @@ MODEL_A_FILE = os.path.join(OUTPUT_DIR, "lgb_final_model.txt")
 # predict_service fallback sang model_b với NO_WEATHER_FEATURE_COLS.
 # Cách train: chạy train_lgb.py với --no-weather, output vào lgb_model_b.txt.
 # FIX: không dùng MODEL_A_FILE làm default — bắt buộc set MODEL_B_PATH.
-MODEL_B_FILE = os.getenv("MODEL_B_PATH", "")
+MODEL_B_FILE = os.path.join(OUTPUT_DIR, "lgb_model_b.txt")  # bỏ os.getenv, hardcode luôn
 
 EXPERIMENT_NAME = "demand_forecast"
 
