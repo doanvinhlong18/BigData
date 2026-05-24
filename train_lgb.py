@@ -10,6 +10,7 @@
 # ==============================================================
 
 import gc
+import sys
 import time
 import psutil
 import numpy as np
@@ -17,61 +18,83 @@ import pyarrow.parquet as pq
 import lightgbm as lgb
 import matplotlib
 
-matplotlib.use("Agg")  # không cần GUI, lưu file trực tiếp
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.metrics import classification_report
 
 # ==============================================================
 # CONFIG — chỉ sửa ở đây
 # ==============================================================
-PARQUET_PATH = r"D:\BigData-master\BigData\datasets\train_data"  # folder chứa file .parquet
-OUTPUT_DIR = r"D:\BigData-master\BigData\datasets\lgb_output"  # thư mục lưu kết quả
-LABEL_COL = "label_6class"
-DROP_COLS = {"window_end", "label_6class"}
-VALID_RATIO = 0.10  # 80% train / 20% valid theo thứ tự thời gian
-BATCH_SIZE = 2_000_000  # rows/batch khi stream, giảm nếu OOM
-RANDOM_SEED = 42
-N_CLASS = 6  # số class thực tế trong label
+PARQUET_PATH = r"D:\BigData-master\BigData\datasets\train_data"
+OUTPUT_DIR   = r"D:\BigData-master\BigData\datasets\lgb_output"
+ML_PATH      = r"D:\BigData-master\BigData\ml"   # path chứa feature_builder.py
+LABEL_COL    = "label_6class"
+VALID_RATIO  = 0.10
+BATCH_SIZE   = 2_000_000
+RANDOM_SEED  = 42
+N_CLASS      = 6
 
 # ==============================================================
-# PARAMS — đã chọn sẵn tối ưu cho 16GB RAM + 3050Ti + 6-class
+# FLAG — đổi thành False để train Model B (không có weather)
+# ==============================================================
+USE_WEATHER = True
+
+# ==============================================================
+# WEATHER FEATURES — đồng bộ với feature_builder.py
+# ==============================================================
+_RAW_WEATHER_COLS = [
+    "temperature_2m", "relative_humidity_2m", "surface_pressure",
+    "precipitation", "rain", "snowfall",
+    "cloud_cover", "weather_code", "wind_speed_10m", "wind_gusts_10m",
+]
+_WEATHER_LEAD_COLS = [
+    f"{c}_lead{s}"
+    for c in ["temperature_2m", "relative_humidity_2m", "surface_pressure", "cloud_cover", "weather_code"]
+    for s in [1, 2, 3]
+]
+
+# ==============================================================
+# DROP_COLS — tự động theo USE_WEATHER
+# ==============================================================
+DROP_COLS = {"window_end", "label_6class"}
+if not USE_WEATHER:
+    DROP_COLS |= set(_RAW_WEATHER_COLS) | set(_WEATHER_LEAD_COLS)
+
+# ==============================================================
+# OUTPUT — tên file tự động theo USE_WEATHER
+# ==============================================================
+MODEL_FILE = "lgb_final_model.txt" if USE_WEATHER else "lgb_model_b.txt"
+CKPT_FILE  = "lgb_checkpoint.txt"  if USE_WEATHER else "lgb_model_b_checkpoint.txt"
+
+# ==============================================================
+# PARAMS
 # ==============================================================
 PARAMS = {
-    # Task
-    "objective": "multiclass",
-    "num_class": N_CLASS,
-    "metric": ["multi_logloss", "multi_error"],
-    # CUDA — 3050Ti
-    # Nếu báo lỗi CUDA thì đổi "cuda" → "cpu" và bỏ dòng num_gpu
-    "device": "cpu",
-    # Tree — num_leaves=255 cho data lớn nhiều feature
-    "num_leaves": 255,
-    "max_depth": -1,
-    "min_child_samples": 50,  # cao hơn vì full 26M rows
-    # Sampling — giảm overfit, tăng tốc
-    "feature_fraction": 0.9,
-    "bagging_fraction": 0.9,
-    "bagging_freq": 1,
-    # Regularization
-    "reg_alpha": 0.1,
-    "reg_lambda": 1.0,
-    "min_split_gain": 0.001,
-    # Histogram — max_bin=63 tiết kiệm RAM, đủ cho 26M rows
-    "max_bin": 255,
-    # Learning
-    "learning_rate": 0.05,
-    # System
-    "n_jobs": -1,  # dùng hết core CPU
-    "verbose": -1,
-    "seed": RANDOM_SEED,
+    "objective":         "multiclass",
+    "num_class":         N_CLASS,
+    "metric":            ["multi_logloss", "multi_error"],
+    "device":            "cpu",
+    "num_leaves":        255,
+    "max_depth":         -1,
+    "min_child_samples": 50,
+    "feature_fraction":  0.9,
+    "bagging_fraction":  0.9,
+    "bagging_freq":      1,
+    "reg_alpha":         0.1,
+    "reg_lambda":        1.0,
+    "min_split_gain":    0.001,
+    "max_bin":           255,
+    "learning_rate":     0.05,
+    "n_jobs":            -1,
+    "verbose":           -1,
+    "seed":              RANDOM_SEED,
 }
 
 NUM_BOOST_ROUND = 600
-EARLY_STOP = 50
-LOG_EVERY = 50
-CKPT_EVERY = 200  # lưu checkpoint mỗi N rounds
+EARLY_STOP      = 50
+LOG_EVERY       = 50
+CKPT_EVERY      = 200
 
 
 # ==============================================================
@@ -89,10 +112,8 @@ def elapsed(start):
 
 
 class CheckpointCallback:
-    """Lưu model mỗi N iterations phòng crash"""
-
     def __init__(self, path, every=200):
-        self.path = path
+        self.path  = path
         self.every = every
         self.order = 0
         self.before_iteration = False
@@ -107,29 +128,42 @@ class CheckpointCallback:
 # MAIN
 # ==============================================================
 def main():
-    t0 = time.time()
+    t0  = time.time()
     out = Path(OUTPUT_DIR)
     out.mkdir(parents=True, exist_ok=True)
-    ckpt_path = out / "lgb_checkpoint.txt"
+    ckpt_path = out / CKPT_FILE
+
+    mode = "Model A (WITH weather)" if USE_WEATHER else "Model B (NO weather)"
 
     # ----------------------------------------------------------
     # 1. Đọc schema
     # ----------------------------------------------------------
     print("=" * 55)
-    print("STEP 1 — Đọc schema")
+    print(f"STEP 1 — Doc schema  [{mode}]")
     print("=" * 55)
-    dataset = pq.ParquetDataset(PARQUET_PATH)
-    all_cols = dataset.schema.names
-    feat_cols = [c for c in all_cols if c not in DROP_COLS]
+    dataset   = pq.ParquetDataset(PARQUET_PATH)
+    all_cols  = set(dataset.schema.names)
+
+    # Import feature_builder để lấy canonical column order
+    sys.path.insert(0, ML_PATH)
+    from feature_builder import ALL_FEATURE_COLS, NO_WEATHER_FEATURE_COLS
+
+    # Dùng thứ tự từ ALL_FEATURE_COLS (không từ parquet schema)
+    # → đảm bảo train/inference dùng cùng position cho LightGBM Booster.predict()
+    if USE_WEATHER:
+        feat_cols = [c for c in ALL_FEATURE_COLS if c in all_cols]
+    else:
+        feat_cols = [c for c in NO_WEATHER_FEATURE_COLS if c in all_cols]
+
     read_cols = feat_cols + [LABEL_COL]
 
     print(f"  Features  : {len(feat_cols)}")
     print(f"  Label     : {LABEL_COL}")
-    print(f"  Drop cols : {DROP_COLS & set(all_cols)}")
+    print(f"  In parquet but not in ALL_FEATURE_COLS: {all_cols - set(feat_cols) - {LABEL_COL}}")
     ram("schema")
 
     # ----------------------------------------------------------
-    # 2. Stream toàn bộ data vào RAM — KHÔNG sample
+    # 2. Stream full data
     # ----------------------------------------------------------
     print("\n" + "=" * 55)
     print("STEP 2 — Stream full data")
@@ -139,13 +173,13 @@ def main():
     y_parts = []
     total_rows = 0
     parquet_files = [f.path for f in dataset.fragments if str(f.path).endswith('.parquet')]
-    print(f"  Số file parquet: {len(parquet_files)}")
+    print(f"  So file parquet: {len(parquet_files)}")
 
     for file_path in parquet_files:
         pf = pq.ParquetFile(file_path)
         for batch in pf.iter_batches(batch_size=BATCH_SIZE, columns=read_cols):
             tbl = batch.to_pydict()
-            n = len(tbl[LABEL_COL])
+            n   = len(tbl[LABEL_COL])
             total_rows += n
 
             y_b = np.array(tbl[LABEL_COL], dtype="int32")
@@ -160,55 +194,49 @@ def main():
             gc.collect()
             print(f"  loaded {total_rows:,} rows", end="\r")
 
-    print(f"\n  Tổng: {total_rows:,} rows  ({elapsed(t1)})")
+    print(f"\n  Tong: {total_rows:,} rows  ({elapsed(t1)})")
 
-    X = np.concatenate(X_parts)
-    del X_parts
-    gc.collect()
-    y = np.concatenate(y_parts)
-    del y_parts
-    gc.collect()
+    X = np.concatenate(X_parts); del X_parts; gc.collect()
+    y = np.concatenate(y_parts); del y_parts; gc.collect()
 
     print(f"  Shape : {X.shape}  dtype: {X.dtype}")
-    print("  Phân phối class:")
     unique, counts = np.unique(y, return_counts=True)
     for cls, cnt in zip(unique, counts):
         print(f"    class {cls}: {cnt:,}  ({cnt/len(y)*100:.1f}%)")
     ram("after stream")
 
     # ----------------------------------------------------------
-    # 3. Time-series split — KHÔNG shuffle
+    # 3. Time-series split
     # ----------------------------------------------------------
     print("\n" + "=" * 55)
     print("STEP 3 — Time-series split")
     print("=" * 55)
-    split = int(len(X) * (1 - VALID_RATIO))
-    X_tr, X_val = X[:split], X[split:]
-    y_tr, y_val = y[:split], y[split:]
-    del X, y
-    gc.collect()
+    split        = int(len(X) * (1 - VALID_RATIO))
+    X_tr, X_val  = X[:split], X[split:]
+    y_tr, y_val  = y[:split], y[split:]
+    del X, y; gc.collect()
 
     print(f"  Train : {X_tr.shape}")
     print(f"  Valid : {X_val.shape}")
     ram("after split")
 
     # ----------------------------------------------------------
-    # 4. Class weights — imbalanced
+    # 4. Class weights
     # ----------------------------------------------------------
     print("\n" + "=" * 55)
     print("STEP 4 — Class weights")
     print("=" * 55)
     classes = np.unique(y_tr)
     weights = compute_class_weight("balanced", classes=classes, y=y_tr)
-    w_map = dict(zip(classes.tolist(), weights.tolist()))
+    w_map   = dict(zip(classes.tolist(), weights.tolist()))
     for k, v in w_map.items():
         print(f"  class {k}: {v:.3f}")
 
-    sw_tr = np.array([w_map[c] for c in y_tr], dtype="float32")
+    sw_tr  = np.array([w_map[c] for c in y_tr], dtype="float32")
     sw_val = np.array([w_map[c] for c in y_val], dtype="float32")
 
     # ----------------------------------------------------------
-    # 5. Build LGB Dataset — construct() ngay để free numpy
+    # 5. Build LGB Dataset
     # ----------------------------------------------------------
     print("\n" + "=" * 55)
     print("STEP 5 — Build LGB Dataset")
@@ -217,46 +245,34 @@ def main():
 
     print("  Building dtrain...")
     dtrain = lgb.Dataset(
-        X_tr,
-        label=y_tr,
-        feature_name=feat_cols,
-        weight=sw_tr,
-        free_raw_data=True,
-        categorical_feature=["zone_id"],
+        X_tr, label=y_tr, feature_name=feat_cols, weight=sw_tr,
+        free_raw_data=True, categorical_feature=["zone_id"],
         params={"max_bin": PARAMS["max_bin"]},
     )
     dtrain.construct()
-    del X_tr, y_tr, sw_tr
-    gc.collect()
+    del X_tr, y_tr, sw_tr; gc.collect()
     ram("after dtrain")
 
     print("  Building dvalid...")
     dvalid = lgb.Dataset(
-        X_val,
-        label=y_val,
-        reference=dtrain,
-        feature_name=feat_cols,
-        weight=sw_val,
-        free_raw_data=True,
-        categorical_feature=["zone_id"],
+        X_val, label=y_val, reference=dtrain, feature_name=feat_cols, weight=sw_val,
+        free_raw_data=True, categorical_feature=["zone_id"],
         params={"max_bin": PARAMS["max_bin"]},
     )
     dvalid.construct()
-    del X_val, y_val, sw_val
-    gc.collect()
+    del X_val, y_val, sw_val; gc.collect()
     ram(f"after dvalid — ready to train  ({elapsed(t2)})")
 
     # ----------------------------------------------------------
     # 6. Train
     # ----------------------------------------------------------
     print("\n" + "=" * 55)
-    print("STEP 6 — Training")
+    print(f"STEP 6 — Training  [{mode}]")
     print("=" * 55)
     t3 = time.time()
 
     model = lgb.train(
-        PARAMS,
-        dtrain,
+        PARAMS, dtrain,
         num_boost_round=NUM_BOOST_ROUND,
         valid_sets=[dvalid],
         valid_names=["valid"],
@@ -277,11 +293,12 @@ def main():
     # 7. Lưu model
     # ----------------------------------------------------------
     print("\n" + "=" * 55)
-    print("STEP 7 — Lưu model")
+    print("STEP 7 — Luu model")
     print("=" * 55)
-    model_path = out / "lgb_final_model.txt"
+    model_path = out / MODEL_FILE
     model.save_model(str(model_path))
-    print(f"  Model saved: {model_path}")
+    print(f"  Model saved : {model_path}")
+    print(f"  Num features: {model.num_feature()}")
 
 
 if __name__ == "__main__":

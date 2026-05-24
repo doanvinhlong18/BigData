@@ -7,3 +7,5 @@ datasets
 train_data
 .history
 outputs
+__pycache__/
+*.pyc
