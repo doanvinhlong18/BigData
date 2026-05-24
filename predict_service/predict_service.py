@@ -385,14 +385,14 @@ class ModelCache:
 def _predict_slot(
     slot_end, cur_df, l92_df, l668_df, weather_df, cache: ModelCache
 ) -> int:
+    # FeatureBuilder.build_inference_matrix_from_snapshots() already calls
+    # inject_weather_leads() internally, so don't call it again here
     feat_df = FeatureBuilder.build_inference_matrix_from_snapshots(
         current_df=cur_df,
         lag92_df=l92_df,
         lag668_df=l668_df,
         weather_df=weather_df if not weather_df.empty else None,
     )
-    if not weather_df.empty:
-        feat_df = inject_weather_leads(feat_df, weather_df)
 
     rows = []
     for _, row in feat_df.iterrows():
