@@ -5,21 +5,10 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="95e9fb05-9161-494e-977c-e8ddbafc2321" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/spark/delta/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/spark/delta/tables.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.env" beforeDir="false" afterPath="$PROJECT_DIR$/.env" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/airflow/dags/retrain_dag.py" beforeDir="false" afterPath="$PROJECT_DIR$/airflow/dags/retrain_dag.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/docker-compose.master.yml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.master.yml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docker-compose.worker.yml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.worker.yml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/monitoring/spark-metrics/spark-defaults.conf" beforeDir="false" afterPath="$PROJECT_DIR$/monitoring/spark-metrics/spark-defaults.conf" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/predict_service/predict_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/predict_service/predict_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/producer/unified_producer.py" beforeDir="false" afterPath="$PROJECT_DIR$/producer/unified_producer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/monitoring/prometheus/prometheus.yml" beforeDir="false" afterPath="$PROJECT_DIR$/monitoring/prometheus/prometheus.yml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/scripts/submit-jobs.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/submit-jobs.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/submit_bronze_jobs.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/submit_bronze_jobs.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/spark/Dockerfile" beforeDir="false" afterPath="$PROJECT_DIR$/spark/Dockerfile" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/spark/conf/spark-defaults.conf" beforeDir="false" afterPath="$PROJECT_DIR$/spark/conf/spark-defaults.conf" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/spark/jobs/request_bronze_to_silver.py" beforeDir="false" afterPath="$PROJECT_DIR$/spark/jobs/request_bronze_to_silver.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -89,7 +78,7 @@
     &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
     &quot;ai.playground.ignore.import.keys.banner.in.settings&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;fix-pipeline&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
     &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
     &quot;last_opened_file_path&quot;: &quot;E:/My space/Work/BigData&quot;,
     &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,

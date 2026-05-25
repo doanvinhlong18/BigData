@@ -143,10 +143,10 @@ scrape_configs:
   - job_name: "cadvisor"
     static_configs:
       - targets: ["cadvisor:8080"]
-    metric_relabel_configs:
-      - source_labels: [container_label_com_docker_compose_service]
-        regex: "kafka|spark-master|spark-worker|airflow|minio|mlflow|zookeeper|request-producer|pickup-producer|dropoff-producer|postgres"
-        action: keep
+#    metric_relabel_configs:
+#      - source_labels: [container_label_com_docker_compose_service]
+#        regex: "kafka|spark-master|spark-worker|airflow|minio|mlflow|zookeeper|request-producer|pickup-producer|dropoff-producer|postgres"
+#        action: keep
 
   # ── Node Exporter (master machine) ───────────────────────────
   - job_name: "node-exporter-master"

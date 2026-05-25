@@ -51,7 +51,8 @@ services:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     restart: unless-stopped
-    mem_limit: 2g   # JVM heap 1G + overhead/metaspace/GC ~600M — buffer tránh OOM kill
+    mem_limit: 3g   # JVM heap 1G + overhead/metaspace/GC ~600M — buffer tránh OOM kill
+    cpus: 2.0   # Limit CPU to prevent Kafka from starving other services (especially on single-machine)
     depends_on:
       zookeeper:
         condition: service_healthy
@@ -136,8 +137,9 @@ services:
     image: minio/minio:latest
     container_name: minio
     restart: unless-stopped
-    mem_limit: 1g   # S3-compatible object store — 1G đủ cho workload Delta + parquet
+    mem_limit: 2g   # S3-compatible object store — 1G đủ cho workload Delta + parquet
     command: server /data --console-address ":9001"
+    cpus: 1.5  # Limit CPU to prevent MinIO from starving other services (especially on single-machine)
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
@@ -182,6 +184,8 @@ services:
     container_name: spark-master
     restart: unless-stopped
     command: spark-class org.apache.spark.deploy.master.Master
+    mem_limit: 2g   # JVM heap 1G + overhead/metaspace/GC ~500M — buffer tránh OOM kill
+    cpus: 2.0  # Limit CPU to prevent Spark Master from starving other services (especially on single-machine)
     environment:
       # spark-master hostname — Docker DNS resolves this on the master network.
       # Remote workers resolve it via extra_hosts: spark-master:${MASTER_IP}
@@ -219,6 +223,9 @@ services:
       - ./scripts:/opt/spark/app/scripts
       - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
       - ${DATASET_PATH}:/datasets:ro
+    extra_hosts:
+      - "spark-worker-A:26.237.119.249"
+      - "spark-worker-B:26.190.232.158"
     healthcheck:
       test: curl -f http://localhost:8080
       interval: 30s
@@ -279,6 +286,7 @@ services:
     container_name: postgres
     restart: unless-stopped
     mem_limit: 1g   # shared_buffers 256M + work_mem + overhead — đủ cho 3 databases nhỏ
+    cpus: 1.0  # Limit CPU to prevent Postgres from starving other services (especially on single-machine)
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -309,6 +317,8 @@ services:
   # Chỉ còn 2 DAG: monitoring_dag + retrain_dag
   # predict_dag đã tách ra predict-service (Python loop thuần)
   airflow:
+      mem_limit: 2g
+      cpus: 1.5
       # Dùng image custom thay vì apache/airflow gốc
       build:
         context: ./airflow
@@ -440,20 +450,31 @@ services:
 
   # ── MLFLOW ─────────────────────────────────────────────────────
   mlflow:
-    image: python:3.11-slim
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
     container_name: mlflow
     restart: unless-stopped
-    mem_limit: 2g   # pip install + MLflow server can exceed 800m on Docker Desktop
+
     depends_on:
       minio:
         condition: service_healthy
       postgres:
         condition: service_healthy
+
     environment:
       <<: *minio-env
-    command: ["bash", "-c", "pip install --no-cache-dir --quiet mlflow boto3 psycopg2-binary && exec mlflow server --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow --default-artifact-root s3://mlflow-artifacts/ --host 0.0.0.0 --port 5000 --allowed-hosts '*' --cors-allowed-origins '*'"]
+
+    command: >
+      mlflow server
+      --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+      --default-artifact-root s3://mlflow-artifacts/
+      --host 0.0.0.0
+      --port 5000
+
     ports:
       - "5000:5000"
+
     healthcheck:
       test:
         [
@@ -465,7 +486,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 60s
+      start_period: 90s
 
   # ── PROMETHEUS ─────────────────────────────────────────────────
   prometheus:
@@ -473,6 +494,7 @@ services:
     container_name: prometheus
     restart: unless-stopped
     mem_limit: 1g   # TSDB 30d + WAL in-memory index ~400M; 1G buffer
+    cpus: 0.5  # Limit CPU to prevent Prometheus from starving other services (especially on single-machine)
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -496,6 +518,8 @@ services:
     image: grafana/grafana:10.2.0
     container_name: grafana
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.25
     depends_on:
       postgres:
         condition: service_healthy
@@ -565,6 +589,8 @@ services:
 
   # ── PRODUCERS ──────────────────────────────────────────────────
   request-producer:
+    mem_limit: 512m
+    cpus: 0.25
     build:
       context: ./producer
       dockerfile: Dockerfile
