@@ -211,6 +211,8 @@ services:
     extra_hosts:
       # Driver chạy trong spark-master cần resolve hostname worker về IP LAN của máy worker.
       - "${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}:${WORKER_IP:?set WORKER_IP in .env}"
+      - "spark-worker-A:26.237.119.249"
+      - "spark-worker-B:26.190.232.158"
     ports:
       - "7077:7077"   # Spark Master RPC — workers connect here
       - "8080:8080"   # Spark Master Web UI
@@ -227,9 +229,6 @@ services:
       - ./scripts:/opt/spark/app/scripts
       - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
       - ${DATASET_PATH}:/datasets:ro
-    extra_hosts:
-      - "spark-worker-A:26.237.119.249"
-      - "spark-worker-B:26.190.232.158"
     healthcheck:
       test: curl -f http://localhost:8080
       interval: 30s
