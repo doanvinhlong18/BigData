@@ -105,11 +105,12 @@ stop_local_worker_stack_conflicts() {
   # the same host by accident, it occupies ports that the master needs:
   #   spark-worker-*  -> 7337-7360, 8081, 8085
   #   cadvisor-worker -> 8090
+  #   node-exporter-worker -> 9100
   #
   # In the intended 2-machine setup the worker runs on another machine, so these
   # containers should not exist locally on the master.
   local workers
-  workers="$(docker ps -a --format '{{.Names}}' | grep -E '^(spark-worker-|cadvisor-worker$)' || true)"
+  workers="$(docker ps -a --format '{{.Names}}' | grep -E '^(spark-worker-|cadvisor-worker$|node-exporter-worker$)' || true)"
   if [ -z "$workers" ]; then
     return 0
   fi

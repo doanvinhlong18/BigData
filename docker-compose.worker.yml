@@ -84,9 +84,6 @@ services:
       - "minio:${MASTER_IP}"
       - "postgres:${MASTER_IP}"
       - "mlflow:${MASTER_IP}"
-      - "spark-worker-A:192.168.110.188"
-      - "spark-worker-B:192.168.110.229"
-      - "spark-worker-C:192.168.110.42"
     healthcheck:
       test: curl -f http://localhost:8081
       interval: 30s
