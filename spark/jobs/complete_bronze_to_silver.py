@@ -111,7 +111,7 @@ def main():
             "wav_request_flag",
             "access_a_ride_flag",
             "shared_request_flag",
-            "shared_match_flag",
+            "share_match_flag",
             "wav_match_flag",
         )
     )

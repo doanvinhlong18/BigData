@@ -215,9 +215,10 @@ def main():
                 F.col("pickup_datetime").cast("long")
                 - F.col("request_datetime").cast("long"),
             )
+            .withColumn("w", window("pickup_datetime", WINDOW_DURATION, SLIDE_DURATION))
             .groupBy(
                 col("PULocationID").alias("zone_id"),
-                window("pickup_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+                col("w"),
             )
             .agg(
                 count("*").alias("pickup_60m"),
@@ -226,7 +227,7 @@ def main():
                 # [FIX] matched_rp: đếm trips có request_datetime trong cùng window
                 # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
                 F.sum(
-                    F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
+                    F.when(F.col("request_datetime") >= F.col("w").getField("start"), F.lit(1))
                     .otherwise(F.lit(0))
                 ).alias("matched_rp"),
                 # wav_match / share_match từ silver/response
@@ -249,16 +250,17 @@ def main():
         dropoff_metrics = (
             batch_df.filter(col("dropoff_datetime").isNotNull())
             .filter("DOLocationID >= 1 AND DOLocationID <= 263")
+            .withColumn("w", window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION))
             .groupBy(
                 col("DOLocationID").alias("zone_id"),
-                window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+                col("w"),
             )
             .agg(
                 count("*").alias("dropoff_60m"),
                 # [FIX] matched_rd: đếm trips có request_datetime trong cùng window
                 # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
                 F.sum(
-                    F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
+                    F.when(F.col("request_datetime") >= F.col("w").getField("start"), F.lit(1))
                     .otherwise(F.lit(0))
                 ).alias("matched_rd"),
             )

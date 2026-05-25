@@ -22,6 +22,40 @@ x-minio-env: &minio-env
   AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
   MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT}
 
+x-wait-all: &wait-all
+  zookeeper:
+    condition: service_healthy
+  kafka:
+    condition: service_healthy
+  kafka-setup:
+    condition: service_completed_successfully
+  minio:
+    condition: service_healthy
+  minio-setup:
+    condition: service_completed_successfully
+  spark-master:
+    condition: service_healthy
+  postgres:
+    condition: service_healthy
+  airflow:
+    condition: service_healthy
+  airflow-statsd-exporter:
+    condition: service_started
+  predict-service:
+    condition: service_healthy
+  mlflow:
+    condition: service_healthy
+  prometheus:
+    condition: service_started
+  grafana:
+    condition: service_started
+  cadvisor:
+    condition: service_started
+  node-exporter:
+    condition: service_started
+  blackbox-exporter:
+    condition: service_started
+
 services:
 
   # ── ZOOKEEPER ─────────────────────────────────────────────────
@@ -184,7 +218,7 @@ services:
     container_name: spark-master
     restart: unless-stopped
     command: spark-class org.apache.spark.deploy.master.Master
-    mem_limit: 2g   # JVM heap 1G + overhead/metaspace/GC ~500M — buffer tránh OOM kill
+    mem_limit: 7g   # 1G Master Daemon + 5x 1G cho 5 Spark Drivers (client mode) + buffer
     cpus: 2.0  # Limit CPU to prevent Spark Master from starving other services (especially on single-machine)
     environment:
       # spark-master hostname — Docker DNS resolves this on the master network.
@@ -603,9 +637,7 @@ services:
       dockerfile: Dockerfile
     container_name: request-producer
     restart: unless-stopped
-    depends_on:
-      kafka:
-        condition: service_healthy
+    depends_on: *wait-all
     command: python -u unified_producer.py request
     environment:
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_INTERNAL}
@@ -621,9 +653,7 @@ services:
       dockerfile: Dockerfile
     container_name: pickup-producer
     restart: unless-stopped
-    depends_on:
-      kafka:
-        condition: service_healthy
+    depends_on: *wait-all
     command: python -u unified_producer.py pickup
     environment:
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_INTERNAL}
@@ -639,9 +669,7 @@ services:
       dockerfile: Dockerfile
     container_name: dropoff-producer
     restart: unless-stopped
-    depends_on:
-      kafka:
-        condition: service_healthy
+    depends_on: *wait-all
     command: python -u unified_producer.py dropoff
     environment:
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_INTERNAL}

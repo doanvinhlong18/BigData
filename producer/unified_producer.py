@@ -175,7 +175,7 @@ def read_and_send(file_path, producer, cfg, prev_time):
             try:
                 producer.send(TOPIC, key=key, value=payload)
                 sent += 1
-                prev_time = cur
+                prev_time = max(prev_time, cur) if prev_time else cur
                 if sent % 10_000 == 0:
                     producer.flush()
                     print(
