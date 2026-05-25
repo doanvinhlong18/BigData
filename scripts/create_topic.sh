@@ -9,7 +9,7 @@
 #    docker exec kafka bash -c "$(cat scripts/create_topic.sh)"
 # ============================================================
 
-BOOTSTRAP="kafka:9092"
+BOOTSTRAP="${KAFKA_BOOTSTRAP_INTERNAL:-kafka:9092}"
 
 echo "[TOPICS] Creating Kafka topics..."
 

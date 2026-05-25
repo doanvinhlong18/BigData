@@ -110,7 +110,7 @@ wait_healthy "kafka"        120
 wait_healthy "minio"        60
 wait_healthy "postgres"     60
 wait_healthy "spark-master" 60
-wait_healthy "mlflow"       120
+wait_healthy "mlflow"       180
 wait_healthy "airflow"      180
 
 # predict-service: chỉ check đang chạy, model chưa có nên sẽ log fallback — bình thường

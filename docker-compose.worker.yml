@@ -3,29 +3,29 @@ version: "3.8"
 # ================================================================
 # docker-compose.worker.yml — Worker Machine (Machine 2+)
 #
-# HOW IT WORKS (Windows Docker Desktop + Radmin/Tailscale VPN)
+# HOW IT WORKS (Windows Docker Desktop + LAN)
 # ─────────────────────────────────────────────────────────────
 # Problem: Docker containers use an internal bridge IP (172.x.x.x)
-# that is NOT routable from the master machine via VPN. When a Spark
+# that is NOT routable from the master machine via LAN. When a Spark
 # Worker registers with the Master, it must advertise an IP that the
-# Master can actually reach back on — the VPN IP of the Windows host.
+# Master can actually reach back on — the LAN IP of the Windows host.
 #
 # Solution:
-#   1. The worker container hostname is spark-worker-${WORKER_ID}.
+#   1. The worker container hostname is SPARK_WORKER_HOST.
 #      Inside the container, that hostname resolves to the container IP,
 #      so Spark can bind successfully.
-#   2. On the master machine, map spark-worker-${WORKER_ID} to WORKER_IP
+#   2. On the master machine, map SPARK_WORKER_HOST to WORKER_IP
 #      in docker-compose.master.yml (extra_hosts on spark-master).
-#      Then Spark Master/Driver resolve that same hostname to the VPN IP.
+#      Then Spark Master/Driver resolve that same hostname to the LAN IP.
 #   3. Published ports (8081/8085/7337-7360) → Docker Desktop forwards
 #      WORKER_IP:PORT connections from the master to the container.
 #
-# Result: Master sees Worker at spark-worker-A:8085, resolves it to
+# Result: Master sees Worker at SPARK_WORKER_HOST:8085, resolves it to
 # WORKER_IP, and Docker Desktop forwards the connection to the container.
 #
 # Usage:
-#   On worker machine, set WORKER_IP in .env to this machine's VPN IP.
-#   WORKER_ID=A docker compose -f docker-compose.worker.yml up -d
+#   On worker machine, set WORKER_IP in .env to this machine's LAN IP.
+#   docker compose -f docker-compose.worker.yml up -d
 # ================================================================
 
 services:
@@ -33,18 +33,18 @@ services:
   # ── SPARK WORKER ───────────────────────────────────────────────
   spark-worker:
     image: bigdata-spark:latest
-    container_name: spark-worker-${WORKER_ID:-A}
-    hostname: spark-worker-${WORKER_ID:-A}
+    container_name: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
+    hostname: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
     restart: unless-stopped
     command:
       - bash
       - -lc
       - >
         exec spark-class org.apache.spark.deploy.worker.Worker
-        --host spark-worker-${WORKER_ID:-A}
+        --host ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
         --port 8085
         --webui-port 8081
-        spark://${MASTER_IP}:7077
+        ${SPARK_MASTER_URL}
     environment:
       SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-10g}
       SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-8}
@@ -55,11 +55,11 @@ services:
       SPARK_DAEMON_MEMORY: 512m
       # Spark advertises this stable hostname. It must resolve to WORKER_IP
       # from the master container, and to the container IP inside this worker.
-      SPARK_LOCAL_HOSTNAME: spark-worker-${WORKER_ID:-A}
-      SPARK_PUBLIC_DNS: spark-worker-${WORKER_ID:-A}
+      SPARK_LOCAL_HOSTNAME: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
+      SPARK_PUBLIC_DNS: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
       # Same hostname for executor JVMs so the driver on master can reach them.
       SPARK_EXECUTOR_OPTS: >-
-        -Dspark.local.hostname=spark-worker-${WORKER_ID:-A}
+        -Dspark.local.hostname=${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
       # S3A credentials — worker writes Parquet/Delta to MinIO on master
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
@@ -76,7 +76,7 @@ services:
       # so blockManager.port and driver.bindAddress are always in sync
       - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
     extra_hosts:
-      # Resolve master-side service hostnames to the master's VPN IP.
+      # Resolve master-side service hostnames to the master's LAN IP.
       # This lets Spark config and S3A use stable hostnames (minio, kafka…)
       # without hardcoding IPs in application code.
       - "spark-master:${MASTER_IP}"
