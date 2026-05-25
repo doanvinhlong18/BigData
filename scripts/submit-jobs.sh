@@ -43,16 +43,12 @@ COMMON="spark-submit \
   --conf spark.executor.memoryOverhead=256m"
 
 # ── Tài nguyên mỗi job ────────────────────────────────────────────────────────
-RES_JOB1="--executor-cores 2 --total-executor-cores 2 --executor-memory 2g   --driver-memory 512m \
-  --conf spark.sql.shuffle.partitions=4"
-RES_JOB2="--executor-cores 1 --total-executor-cores 1 --executor-memory 1g   --driver-memory 512m \
-  --conf spark.sql.shuffle.partitions=4"
-RES_JOB3="--executor-cores 1 --total-executor-cores 1 --executor-memory 1g   --driver-memory 512m \
-  --conf spark.sql.shuffle.partitions=4"
-RES_JOB4="--executor-cores 1 --total-executor-cores 1 --executor-memory 1g   --driver-memory 512m \
-  --conf spark.sql.shuffle.partitions=4"
-RES_JOB5="--executor-cores 1 --total-executor-cores 1 --executor-memory 750m --driver-memory 512m \
-  --conf spark.sql.shuffle.partitions=4"
+RES_JOB1="--executor-cores 2 --total-executor-cores 4 --executor-memory 3g --driver-memory 1g --conf spark.sql.shuffle.partitions=12"
+RES_JOB2="--executor-cores 1 --total-executor-cores 2 --executor-memory 2g --driver-memory 1g --conf spark.sql.shuffle.partitions=8"
+RES_JOB3="--executor-cores 1 --total-executor-cores 2 --executor-memory 2g --driver-memory 1g --conf spark.sql.shuffle.partitions=8"
+RES_JOB4="--executor-cores 1 --total-executor-cores 2 --executor-memory 2g --driver-memory 1g --conf spark.sql.shuffle.partitions=8"
+RES_JOB5="--executor-cores 1 --total-executor-cores 1 --executor-memory 1.5g --driver-memory 1g --conf spark.sql.shuffle.partitions=6"
+
 
 # ── check_delta: kiểm tra Delta table có commit đầu tiên chưa ─────────────────
 # Dùng python3 s3_check.py thay 'hadoop fs -test -e' (hadoop ko có trong image)

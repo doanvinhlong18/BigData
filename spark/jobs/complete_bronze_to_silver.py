@@ -40,7 +40,7 @@ SILVER_COMPLETE = "s3a://silver/complete"
 CHECKPOINT = "s3a://checkpoints/silver/complete"
 
 # ── WATERMARK CONFIG ─────────────────────────────────────────
-RESPONSE_WATERMARK = "24 hours"
+RESPONSE_WATERMARK = "2 hours"
 DROPOFF_WATERMARK = "15 minutes"
 
 
@@ -130,7 +130,7 @@ def main():
             & col("trip_miles").between(0, 200)
             & col("trip_time").between(0, 86400)
         )
-        .dropDuplicates(["trip_id"])
+        # .dropDuplicates(["trip_id"])
         .select(
             "trip_id",
             "dropoff_datetime",
@@ -158,8 +158,8 @@ def main():
             dropoff_stream.trip_id == response_stream.trip_id,
             # ⚠️ Event-time constraint để giới hạn state
             dropoff_stream.dropoff_datetime >= response_stream.pickup_datetime,
-            dropoff_stream.dropoff_datetime
-            <= response_stream.pickup_datetime + expr("INTERVAL 2 HOURS"),
+            # dropoff_stream.dropoff_datetime
+            # <= response_stream.pickup_datetime + expr("INTERVAL 2 HOURS"),
         ],
         how="inner",
     ).select(
