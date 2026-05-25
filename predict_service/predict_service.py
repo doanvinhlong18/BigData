@@ -9,11 +9,9 @@ Vòng lặp chính: mỗi POLL_INTERVAL giây wall clock:
   3. Nếu có slot mới → build features → predict 263 zones → upsert PG
   4. Nếu chưa có slot mới → skip, sleep tiếp
 
-Với SPEED_FACTOR=60 và gold trigger 15 giây:
-  - Mỗi 15 giây wall clock gold có 1 slot mới (= 15 phút event_time)
-  - POLL_INTERVAL=15 → predict ngay khi slot vừa sẵn sàng
-  - Lag thực tế: 0–15 giây wall clock = 0–15 phút event_time
-    (tốt hơn nhiều so với loop 4×15s trước đây có lag tối đa 60 giây)
+Demo mode hiện chạy chậm hơn near realtime:
+  - Spark micro-batch mặc định 30 giây để giảm scheduling/write pressure
+  - POLL_INTERVAL mặc định 1800 giây, tức predict tối đa 1 lần mỗi 30 phút
 
 Models được load 1 lần khi khởi động, reload mỗi MODEL_RELOAD_INTERVAL
 giây để tự động nhận model mới sau khi monitoring_dag promote.
@@ -97,10 +95,12 @@ PG_DB = os.getenv("POSTGRES_DB", "bigdata")
 PG_USER = os.getenv("POSTGRES_USER", "admin")
 PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin123")
 
-# Mỗi 15 giây poll 1 lần → khớp với gold trigger 15 giây
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_S", "15"))
-# Reload model mỗi 5 phút để nhận promote mới từ monitoring_dag
-MODEL_RELOAD_INTERVAL = int(os.getenv("MODEL_RELOAD_INTERVAL_S", "300"))
+# Mỗi 30 phút poll 1 lần trong demo mode — không cần near realtime.
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_S", "1800"))
+# Khi gold chưa có dữ liệu, retry ngắn hơn để lần đầu có prediction sớm hơn.
+EMPTY_RETRY_INTERVAL = int(os.getenv("EMPTY_RETRY_INTERVAL_S", "60"))
+# Reload model cùng cadence với prediction để giảm gọi MLflow.
+MODEL_RELOAD_INTERVAL = int(os.getenv("MODEL_RELOAD_INTERVAL_S", "1800"))
 
 SLOT_MINUTES = 15
 
@@ -191,7 +191,8 @@ def _load_latest_gold():
       - current  (window_end mới nhất)
       - lag92    (window_end - 92 × 15 phút ≈ 23h)
       - lag668   (window_end - 668 × 15 phút ≈ 7 ngày)
-    Dùng Delta stats thay vì full scan.
+    Dùng Delta stats để tìm latest window, rồi lọc bằng pandas để tránh lỗi
+    type mismatch khi deltalake filter timestamp bằng string.
     """
     try:
         dt = DeltaTable(GOLD_AGG_PATH, storage_options=STORAGE_OPTS)
@@ -205,17 +206,22 @@ def _load_latest_gold():
                 latest_we = latest_we.tz_localize("UTC")
         else:
             log.warning("[GOLD] Delta stats unavailable, column-scan fallback")
-            tmp = dt.to_pandas(columns=["window_end"])
-            if tmp.empty:
-                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-            tmp["window_end"] = pd.to_datetime(tmp["window_end"])
-            latest_we = tmp["window_end"].max()
+            latest_we = None
 
+        gold_df = dt.to_pandas()
+        if gold_df.empty:
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        gold_df["window_end"] = pd.to_datetime(gold_df["window_end"], utc=True)
+        if latest_we is None:
+            latest_we = gold_df["window_end"].max()
+        else:
+            latest_we = pd.to_datetime(latest_we, utc=True)
         lag92_we = latest_we - pd.Timedelta(minutes=SLOT_MINUTES * LAG_STEPS[0])
         lag668_we = latest_we - pd.Timedelta(minutes=SLOT_MINUTES * LAG_STEPS[1])
 
         def snap(we):
-            return dt.to_pandas(filters=[("window_end", "=", str(we))])
+            we = pd.to_datetime(we, utc=True)
+            return gold_df[gold_df["window_end"] == we].copy()
 
         return snap(latest_we), snap(lag92_we), snap(lag668_we)
 
@@ -238,6 +244,59 @@ def _get_s3_fs():
 
 
 def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
+    def normalize_weather_frame(wdf: pd.DataFrame, source: str) -> pd.DataFrame:
+        if wdf.empty:
+            return pd.DataFrame()
+        wdf = wdf.copy()
+
+        if "window_end" not in wdf.columns:
+            if "datetime" in wdf.columns:
+                wdf = wdf.rename(columns={"datetime": "window_end"})
+            else:
+                log.warning(
+                    f"[WEATHER] {source} missing window_end/datetime column — running without weather features"
+                )
+                return pd.DataFrame()
+
+        if "zone_id" not in wdf.columns:
+            if "LocationID" in wdf.columns:
+                wdf = wdf.rename(columns={"LocationID": "zone_id"})
+            elif "location_id" in wdf.columns:
+                wdf = wdf.rename(columns={"location_id": "zone_id"})
+            else:
+                log.warning(
+                    f"[WEATHER] {source} missing zone_id/LocationID column — running without weather features"
+                )
+                return pd.DataFrame()
+
+        weather_cols = [
+            "temperature_2m",
+            "relative_humidity_2m",
+            "surface_pressure",
+            "precipitation",
+            "rain",
+            "snowfall",
+            "cloud_cover",
+            "weather_code",
+            "wind_speed_10m",
+            "wind_gusts_10m",
+        ]
+        available_weather_cols = [c for c in weather_cols if c in wdf.columns]
+        if not available_weather_cols:
+            log.warning(
+                f"[WEATHER] {source} has no model weather columns — running without weather features"
+            )
+            return pd.DataFrame()
+
+        wdf["window_end"] = pd.to_datetime(wdf["window_end"], utc=True)
+        wdf["zone_id"] = pd.to_numeric(wdf["zone_id"], errors="coerce")
+        wdf = wdf.dropna(subset=["zone_id", "window_end"])
+        wdf["zone_id"] = wdf["zone_id"].astype("int64")
+        wdf = wdf[wdf["zone_id"].between(1, 263)]
+
+        cols = ["zone_id", "window_end"] + available_weather_cols
+        return wdf[cols].drop_duplicates(subset=["zone_id", "window_end"])
+
     needed: set[str] = set()
     for delta_min in [
         0,
@@ -272,8 +331,10 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
 
     if frames:
         wdf = pd.concat(frames, ignore_index=True)
-        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
-        return wdf
+        wdf = normalize_weather_frame(wdf, "S3 parquet")
+        if wdf.empty:
+            return wdf
+        return wdf[wdf["window_end"].dt.strftime("%Y-%m-%d").isin(needed)]
 
     # 2. Thử local parquet files: datasets/parquet_by_day/{date}.parquet
     local_frames = []
@@ -290,15 +351,18 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
 
     if local_frames:
         wdf = pd.concat(local_frames, ignore_index=True)
-        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
         log.info(f"[WEATHER] Loaded {len(local_frames)} local parquet file(s) for {slot_end}")
-        return wdf
+        wdf = normalize_weather_frame(wdf, "local parquet")
+        if wdf.empty:
+            return wdf
+        return wdf[wdf["window_end"].dt.strftime("%Y-%m-%d").isin(needed)]
 
     # 3. CSV fallback
     if os.path.exists(WEATHER_CSV):
         log.warning("[WEATHER] Parquet not found — CSV fallback")
-        wdf = pd.read_csv(WEATHER_CSV, parse_dates=["window_end"])
-        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+        wdf = normalize_weather_frame(pd.read_csv(WEATHER_CSV), "CSV")
+        if wdf.empty:
+            return wdf
         return wdf[wdf["window_end"].dt.strftime("%Y-%m-%d").isin(needed)]
 
     log.warning("[WEATHER] No weather data found (S3, local parquet, or CSV) — running without weather features")
@@ -309,7 +373,7 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
 class ModelCache:
     """
     Load model từ MLflow 1 lần, tự reload sau MODEL_RELOAD_INTERVAL giây.
-    Tách ra class để vòng lặp chính không gọi MLflow mỗi 15 giây.
+    Tách ra class để vòng lặp chính không gọi MLflow liên tục.
 
     Shadow model = version đang ở stage Staging của model_a.
     monitoring_dag promote Staging → Production khi đủ điều kiện.
@@ -393,10 +457,14 @@ def _predict_slot(
         lag668_df=l668_df,
         weather_df=weather_df if not weather_df.empty else None,
     )
+    feat_df = feat_df.loc[:, ~feat_df.columns.duplicated()].copy()
 
     rows = []
     for _, row in feat_df.iterrows():
-        zone_id = int(row["zone_id"])
+        zone_value = row["zone_id"]
+        if isinstance(zone_value, pd.Series):
+            zone_value = zone_value.iloc[0]
+        zone_id = int(zone_value)
         has_wx = all(pd.notna(row.get(f"temperature_2m_lead{i}")) for i in [1, 2, 3])
 
         if cache.model_a and has_wx:
@@ -491,6 +559,7 @@ def _predict_slot(
 def main():
     log.info(
         f"[INIT] predict_service starting | POLL_INTERVAL={POLL_INTERVAL}s "
+        f"| EMPTY_RETRY_INTERVAL={EMPTY_RETRY_INTERVAL}s "
         f"| MODEL_RELOAD_INTERVAL={MODEL_RELOAD_INTERVAL}s"
     )
 
@@ -512,6 +581,7 @@ def main():
 
     while _running:
         tick_start = time.monotonic()
+        next_sleep = POLL_INTERVAL
 
         try:
             # 1. Reload model nếu đến hạn
@@ -525,6 +595,7 @@ def main():
 
             if cur_df.empty:
                 log.debug("[LOOP] gold empty, waiting for Spark...")
+                next_sleep = EMPTY_RETRY_INTERVAL
             else:
                 cur_df["window_end"] = pd.to_datetime(cur_df["window_end"])
                 slot_end = cur_df["window_end"].iloc[0]
@@ -534,6 +605,7 @@ def main():
                 if last_slot is not None and slot_end <= last_slot:
                     # Gold chưa có slot mới, Spark chưa trigger xong
                     log.debug(f"[LOOP] slot {slot_end} already predicted, skip")
+                    next_sleep = POLL_INTERVAL
                 else:
                     # 4. Slot mới → predict ngay
                     weather_df = _load_weather(slot_end)
@@ -549,16 +621,20 @@ def main():
                     if n > 0:
                         METRIC_LAST_PRED_TS.set(time.time())
                         METRIC_ZONES_PREDICTED.set(n)
+                        next_sleep = POLL_INTERVAL
+                    else:
+                        next_sleep = EMPTY_RETRY_INTERVAL
                     METRIC_MODEL_LOADED.set(
                         1.0 if (cache.model_a or cache.model_b) else 0.0
                     )
 
         except Exception as e:
             log.error(f"[LOOP] unexpected error: {e}", exc_info=True)
+            next_sleep = EMPTY_RETRY_INTERVAL
 
         # 5. Sleep phần còn lại của interval
         elapsed = time.monotonic() - tick_start
-        sleep_s = max(0.0, POLL_INTERVAL - elapsed)
+        sleep_s = max(0.0, next_sleep - elapsed)
         if sleep_s > 0:
             time.sleep(sleep_s)
 

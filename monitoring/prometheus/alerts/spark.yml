@@ -51,13 +51,13 @@ groups:
       # ── Streaming processing lag ──────────────────────────────
       - alert: SparkStreamingBatchDurationHigh
         expr: |
-          {__name__=~"metrics_app_.*_driver_spark_streaming_.*_latency_Value"} > 30000
+          {__name__=~"metrics_app_.*_driver_spark_streaming_.*_latency_Value"} > 120000
         for: 5m
         labels:
           severity: warning
           component: spark
         annotations:
-          summary: "⚠️ Spark Streaming batch duration > 30s ({{ $value }}ms)"
+          summary: "⚠️ Spark Streaming batch duration > 120s ({{ $value }}ms)"
           description: "Batch xử lý quá lâu. Backpressure có thể đang kick in. Kiểm tra worker memory/CPU."
 
       # ── Driver OOM hoặc GC overhead ──────────────────────────

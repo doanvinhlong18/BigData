@@ -84,6 +84,10 @@ services:
       - "minio:${MASTER_IP}"
       - "postgres:${MASTER_IP}"
       - "mlflow:${MASTER_IP}"
+      # Resolve the other worker for executor-to-executor shuffle traffic.
+      # Do not map this worker's own SPARK_WORKER_HOST here; Spark must bind to
+      # the container hostname, not the Windows host LAN IP.
+      - "${SPARK_PEER_WORKER_HOST:-spark-worker-peer}:${SPARK_PEER_WORKER_IP:-127.0.0.1}"
     healthcheck:
       test: curl -f http://localhost:8081
       interval: 30s

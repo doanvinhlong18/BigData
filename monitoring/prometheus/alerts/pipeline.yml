@@ -10,14 +10,14 @@ groups:
       #   - kafka.yml     → producer ingestion, partition offsets/log size
       #   - Grafana dashboard đọc trực tiếp từ PostgreSQL
 
-      # ── predict-service không ghi prediction trong 3 phút ─────
+      # ── predict-service không ghi prediction trong 45 phút ────
       # Duplicate của alert trong airflow.yml — giữ ở đây để
       # pipeline_data_alerts group cũng cover trường hợp này.
       - alert: PredictServiceStale
         expr: |
-          (time() - predict_service_last_prediction_timestamp) > 180
+          (time() - predict_service_last_prediction_timestamp) > 2700
           or absent(predict_service_last_prediction_timestamp) == 1
-        for: 2m
+        for: 10m
         labels:
           severity: critical
           component: predict_service

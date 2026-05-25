@@ -2,29 +2,19 @@
   "title": "NYC Taxi — Infrastructure Monitoring",
   "uid": "nyc-infra-monitoring",
   "schemaVersion": 38,
-  "version": 1,
-  "refresh": "30s",
-  "time": { "from": "now-3h", "to": "now" },
+  "version": 2,
+  "refresh": "15s",
+  "time": { "from": "now-6h", "to": "now" },
   "tags": ["infrastructure", "kafka", "spark", "airflow"],
   "panels": [
     {
       "id": 1,
-      "title": "🟢 Service Health Overview",
+      "title": "Kafka UP",
       "type": "stat",
-      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 4 },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "name"
-      },
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        { "expr": "up{job='kafka'}", "legendFormat": "Kafka", "datasource": "Prometheus" },
-        { "expr": "up{job='spark-master'}", "legendFormat": "Spark Master", "datasource": "Prometheus" },
-        { "expr": "up{job='minio'}", "legendFormat": "MinIO", "datasource": "Prometheus" },
-        { "expr": "up{job='airflow'}", "legendFormat": "Airflow", "datasource": "Prometheus" },
-        { "expr": "probe_success{instance='http://mlflow:5000/health'}", "legendFormat": "MLflow", "datasource": "Prometheus" },
-        { "expr": "probe_success{instance='postgres:5432'}", "legendFormat": "PostgreSQL", "datasource": "Prometheus" }
+        { "expr": "up{job=\"kafka\"}", "legendFormat": "Kafka" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -32,349 +22,214 @@
             { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } },
             { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } }
           ],
-          "thresholds": {
-            "steps": [
-              { "color": "red", "value": 0 },
-              { "color": "green", "value": 1 }
-            ]
-          }
+          "thresholds": { "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] }
         }
       }
     },
     {
       "id": 2,
-      "title": "Kafka — Partition End Offset",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "title": "Spark Master UP",
+      "type": "stat",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "kafka_log_log_end_offset{topic=\"nyc_taxi_events\"}",
-          "legendFormat": "Partition {{partition}}",
-          "datasource": "Prometheus"
-        }
+        { "expr": "up{job=\"spark-master\"}", "legendFormat": "Spark Master" }
       ],
       "fieldConfig": {
         "defaults": {
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": 0 },
-              { "color": "yellow", "value": 50000 },
-              { "color": "red", "value": 200000 }
-            ]
-          },
-          "custom": { "fillOpacity": 20 }
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } },
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } }
+          ],
+          "thresholds": { "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] }
         }
       }
     },
     {
       "id": 3,
-      "title": "Kafka — Messages In/sec",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "kafka_server_brokertopicmetrics_messagesin_rate1m{topic=\"nyc_taxi_events\"}",
-          "legendFormat": "Messages/sec",
-          "datasource": "Prometheus"
-        }
-      ]
-    },
-    {
-      "id": 4,
-      "title": "Spark — Active Workers",
+      "title": "MinIO UP",
       "type": "stat",
-      "gridPos": { "x": 0, "y": 12, "w": 4, "h": 4 },
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "metrics_master_aliveWorkers_Value",
-          "legendFormat": "Workers",
-          "datasource": "Prometheus"
-        }
+        { "expr": "up{job=\"minio\"}", "legendFormat": "MinIO" }
       ],
       "fieldConfig": {
         "defaults": {
-          "thresholds": {
-            "steps": [
-              { "color": "red", "value": 0 },
-              { "color": "yellow", "value": 1 },
-              { "color": "green", "value": 2 }
-            ]
-          }
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } },
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } }
+          ],
+          "thresholds": { "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Airflow UP",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "up{job=\"airflow\"}", "legendFormat": "Airflow" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } },
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } }
+          ],
+          "thresholds": { "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] }
         }
       }
     },
     {
       "id": 5,
-      "title": "Spark — Running Apps",
+      "title": "Predict Service UP",
       "type": "stat",
-      "gridPos": { "x": 4, "y": 12, "w": 4, "h": 4 },
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "metrics_master_apps_Value",
-          "legendFormat": "Running Jobs",
-          "datasource": "Prometheus"
-        }
+        { "expr": "up{job=\"predict-service\"}", "legendFormat": "Predict Service" }
       ],
       "fieldConfig": {
         "defaults": {
-          "thresholds": {
-            "steps": [
-              { "color": "red", "value": 0 },
-              { "color": "yellow", "value": 3 },
-              { "color": "green", "value": 5 }
-            ]
-          }
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } },
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } }
+          ],
+          "thresholds": { "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] }
         }
       }
     },
     {
       "id": 6,
-      "title": "Spark — Worker Cores Used",
+      "title": "Spark Workers Alive",
       "type": "stat",
-      "gridPos": { "x": 8, "y": 12, "w": 4, "h": 4 },
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "sum(metrics_worker_coresUsed_Value)",
-          "legendFormat": "Used cores",
-          "datasource": "Prometheus"
-        }
+        { "expr": "metrics_master_aliveWorkers_Value", "legendFormat": "Alive workers" }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": 0 },
-              { "color": "yellow", "value": 18 },
-              { "color": "red", "value": 23 }
-            ]
-          }
+          "thresholds": { "steps": [ { "color": "red", "value": 0 }, { "color": "yellow", "value": 1 }, { "color": "green", "value": 2 } ] }
         }
       }
     },
     {
       "id": 7,
-      "title": "Predict — Last Prediction Age",
-      "type": "stat",
-      "gridPos": { "x": 12, "y": 12, "w": 4, "h": 4 },
+      "title": "Kafka Topic Offsets",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "(time() - predict_service_last_prediction_timestamp) / 60",
-          "legendFormat": "Minutes since prediction",
-          "datasource": "Prometheus"
-        }
+        { "expr": "kafka_log_log_end_offset{topic=\"nyc_taxi_events\"}", "legendFormat": "Partition {{partition}}" }
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "m",
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": 0 },
-              { "color": "yellow", "value": 15 },
-              { "color": "red", "value": 20 }
-            ]
-          }
-        }
-      }
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 20 } } }
     },
     {
       "id": 8,
-      "title": "Predict — Model Loaded",
-      "type": "stat",
-      "gridPos": { "x": 16, "y": 12, "w": 4, "h": 4 },
+      "title": "Kafka Messages In / sec",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "predict_service_model_loaded",
-          "legendFormat": "Model loaded",
-          "datasource": "Prometheus"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "thresholds": {
-            "steps": [
-              { "color": "red", "value": 0 },
-              { "color": "green", "value": 1 }
-            ]
-          }
-        }
-      }
+        { "expr": "kafka_server_brokertopicmetrics_messagesin_rate1m{topic=\"nyc_taxi_events\"}", "legendFormat": "Messages/sec" }
+      ]
     },
     {
       "id": 9,
-      "title": "Predict — Zones Last Slot",
+      "title": "Predict Service Last Prediction Age (min)",
       "type": "stat",
-      "gridPos": { "x": 20, "y": 12, "w": 4, "h": 4 },
+      "gridPos": { "x": 0, "y": 12, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "predict_service_zones_predicted_last_slot",
-          "legendFormat": "Zones",
-          "datasource": "Prometheus"
-        }
+        { "expr": "(time() - predict_service_last_prediction_timestamp) / 60", "legendFormat": "Minutes" }
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "thresholds": {
-            "steps": [
-              { "color": "red", "value": 0 },
-              { "color": "yellow", "value": 1 },
-              { "color": "green", "value": 200 }
-            ]
-          }
-        }
-      }
+      "fieldConfig": { "defaults": { "unit": "m" } }
     },
     {
       "id": 10,
-      "title": "Host — CPU Usage (%)",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "title": "Predict Service Model Loaded",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 12, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)",
-          "legendFormat": "CPU %",
-          "datasource": "Prometheus"
-        }
+        { "expr": "predict_service_model_loaded", "legendFormat": "Loaded" }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "min": 0, "max": 100,
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": 0 },
-              { "color": "yellow", "value": 75 },
-              { "color": "red", "value": 90 }
-            ]
-          },
-          "custom": { "fillOpacity": 15 }
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "LOADED", "color": "green" } } },
+            { "type": "value", "options": { "0": { "text": "NOT LOADED", "color": "red" } } }
+          ]
         }
       }
     },
     {
       "id": 11,
-      "title": "Host — RAM Usage (%)",
-      "type": "timeseries",
-      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 8 },
+      "title": "Predict Service Zones Last Slot",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 12, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
-          "legendFormat": "RAM %",
-          "datasource": "Prometheus"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0, "max": 100,
-          "custom": { "fillOpacity": 15 }
-        }
-      }
-    },
-    {
-      "id": 12,
-      "title": "Host — Disk Usage (%)",
-      "type": "timeseries",
-      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 8 },
-      "targets": [
-        {
-          "expr": "max by(instance) ((1 - (node_filesystem_avail_bytes{mountpoint=~\"/|/var/lib|/mnt/docker-desktop-disk\"} / node_filesystem_size_bytes{mountpoint=~\"/|/var/lib|/mnt/docker-desktop-disk\"})) * 100)",
-          "legendFormat": "Disk %",
-          "datasource": "Prometheus"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0, "max": 100,
-          "custom": { "fillOpacity": 15 }
-        }
-      }
-    },
-    {
-      "id": 13,
-      "title": "Container Memory Usage",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "container_memory_usage_bytes{id=\"/\"} / 1024 / 1024",
-          "legendFormat": "{{instance}}",
-          "datasource": "Prometheus"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": { "unit": "decmbytes" }
-      }
-    },
-    {
-      "id": 14,
-      "title": "Container CPU Usage",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "rate(container_cpu_usage_seconds_total{id=\"/\"}[1m]) * 100",
-          "legendFormat": "{{instance}}",
-          "datasource": "Prometheus"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": { "unit": "percent" }
-      }
-    },
-    {
-      "id": 15,
-      "title": "Airflow — Task Success vs Failed (last 24h)",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 32, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "increase(airflow_task_success_total[1h])",
-          "legendFormat": "✅ Success: {{dag_id}}",
-          "datasource": "Prometheus"
-        },
-        {
-          "expr": "increase(airflow_task_failed_total[1h])",
-          "legendFormat": "❌ Failed: {{dag_id}}",
-          "datasource": "Prometheus"
-        }
+        { "expr": "predict_service_zones_predicted_last_slot", "legendFormat": "Zones" }
       ]
     },
     {
-      "id": 16,
-      "title": "MinIO — Storage Used",
+      "id": 12,
+      "title": "MinIO Storage Used (GB)",
       "type": "stat",
-      "gridPos": { "x": 12, "y": 32, "w": 6, "h": 4 },
+      "gridPos": { "x": 16, "y": 12, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        {
-          "expr": "minio_cluster_usage_total_bytes / 1024 / 1024 / 1024",
-          "legendFormat": "Used (GB)",
-          "datasource": "Prometheus"
-        }
+        { "expr": "minio_cluster_usage_total_bytes / 1024 / 1024 / 1024", "legendFormat": "GB" }
       ],
-      "fieldConfig": {
-        "defaults": { "unit": "decgbytes" }
-      }
+      "fieldConfig": { "defaults": { "unit": "gbytes" } }
     },
     {
-      "id": 17,
-      "title": "Active Alerts",
-      "type": "alertlist",
-      "gridPos": { "x": 0, "y": 40, "w": 24, "h": 8 },
-      "options": {
-        "alertName": "",
-        "dashboardAlerts": false,
-        "groupMode": "tags",
-        "maxItems": 20,
-        "sortOrder": 3,
-        "stateFilter": {
-          "firing": true,
-          "pending": true
-        }
-      }
+      "id": 13,
+      "title": "Airflow Task Success",
+      "type": "timeseries",
+      "gridPos": { "x": 20, "y": 12, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "increase(airflow_task_success_total[24h])", "legendFormat": "Success" }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Host CPU Usage (%)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)", "legendFormat": "CPU {{instance}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } }
+    },
+    {
+      "id": 15,
+      "title": "Host RAM Usage (%)",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "100 - ((node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100)", "legendFormat": "RAM {{instance}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } }
+    },
+    {
+      "id": 16,
+      "title": "Container CPU Usage",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum by(instance) (rate(container_cpu_usage_seconds_total{id=\"/\"}[1m])) * 100", "legendFormat": "{{instance}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent" } }
     }
   ]
 }

@@ -211,15 +211,45 @@ services:
       STREAMING_CHECKPOINT_BASE: ${STREAMING_CHECKPOINT_BASE:-s3a://checkpoints}
       STATEFUL_CHECKPOINT_BASE: ${STATEFUL_CHECKPOINT_BASE:-s3a://checkpoints}
       STATEFUL_STREAM_MASTER: ${STATEFUL_STREAM_MASTER:-spark://spark-master:7077}
-      GOLD_MAX_FILES_PER_TRIGGER: ${GOLD_MAX_FILES_PER_TRIGGER:-20}
+      SPARK_TRIGGER_INTERVAL_S: ${SPARK_TRIGGER_INTERVAL_S:-30}
+      SOURCE_WAIT_POLL_S: ${SOURCE_WAIT_POLL_S:-30}
+      LAUNCHER_POLL_INTERVAL_S: ${LAUNCHER_POLL_INTERVAL_S:-30}
+      KAFKA_MAX_OFFSETS_PER_TRIGGER: ${KAFKA_MAX_OFFSETS_PER_TRIGGER:-30000}
+      GOLD_TRIGGER_INTERVAL_S: ${GOLD_TRIGGER_INTERVAL_S:-30}
+      GOLD_MAX_FILES_PER_TRIGGER: ${GOLD_MAX_FILES_PER_TRIGGER:-10}
+      GOLD_WINDOW_DURATION: ${GOLD_WINDOW_DURATION:-60 minutes}
+      GOLD_SLIDE_DURATION: ${GOLD_SLIDE_DURATION:-15 minutes}
+      GOLD_WINDOW_LOOKBACK_MINUTES: ${GOLD_WINDOW_LOOKBACK_MINUTES:-60}
+      JOB1_EXECUTOR_CORES: ${JOB1_EXECUTOR_CORES:-2}
+      JOB1_TOTAL_CORES: ${JOB1_TOTAL_CORES:-2}
+      JOB1_EXECUTOR_MEMORY: ${JOB1_EXECUTOR_MEMORY:-4g}
+      JOB1_DRIVER_MEMORY: ${JOB1_DRIVER_MEMORY:-1g}
+      JOB1_SHUFFLE_PARTITIONS: ${JOB1_SHUFFLE_PARTITIONS:-6}
+      JOB2_EXECUTOR_CORES: ${JOB2_EXECUTOR_CORES:-1}
+      JOB2_TOTAL_CORES: ${JOB2_TOTAL_CORES:-1}
+      JOB2_EXECUTOR_MEMORY: ${JOB2_EXECUTOR_MEMORY:-2g}
+      JOB2_DRIVER_MEMORY: ${JOB2_DRIVER_MEMORY:-1g}
+      JOB2_SHUFFLE_PARTITIONS: ${JOB2_SHUFFLE_PARTITIONS:-4}
+      JOB3_EXECUTOR_CORES: ${JOB3_EXECUTOR_CORES:-1}
+      JOB3_TOTAL_CORES: ${JOB3_TOTAL_CORES:-1}
+      JOB3_EXECUTOR_MEMORY: ${JOB3_EXECUTOR_MEMORY:-2g}
+      JOB3_DRIVER_MEMORY: ${JOB3_DRIVER_MEMORY:-1g}
+      JOB3_SHUFFLE_PARTITIONS: ${JOB3_SHUFFLE_PARTITIONS:-4}
+      JOB4_EXECUTOR_CORES: ${JOB4_EXECUTOR_CORES:-1}
+      JOB4_TOTAL_CORES: ${JOB4_TOTAL_CORES:-1}
+      JOB4_EXECUTOR_MEMORY: ${JOB4_EXECUTOR_MEMORY:-2g}
+      JOB4_DRIVER_MEMORY: ${JOB4_DRIVER_MEMORY:-1g}
+      JOB4_SHUFFLE_PARTITIONS: ${JOB4_SHUFFLE_PARTITIONS:-4}
       JOB5_EXECUTOR_CORES: ${JOB5_EXECUTOR_CORES:-2}
-      JOB5_TOTAL_CORES: ${JOB5_TOTAL_CORES:-6}
-      JOB5_EXECUTOR_MEMORY: ${JOB5_EXECUTOR_MEMORY:-5g}
+      JOB5_TOTAL_CORES: ${JOB5_TOTAL_CORES:-4}
+      JOB5_EXECUTOR_MEMORY: ${JOB5_EXECUTOR_MEMORY:-4g}
       JOB5_DRIVER_MEMORY: ${JOB5_DRIVER_MEMORY:-2g}
-      JOB5_SHUFFLE_PARTITIONS: ${JOB5_SHUFFLE_PARTITIONS:-24}
+      JOB5_SHUFFLE_PARTITIONS: ${JOB5_SHUFFLE_PARTITIONS:-12}
     extra_hosts:
-      # Driver chạy trong spark-master cần resolve hostname worker về IP LAN của máy worker.
-      - "${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}:${WORKER_IP:?set WORKER_IP in .env}"
+      # Driver chạy trong spark-master cần resolve hostname worker về IP LAN của từng máy worker.
+      - "${SPARK_WORKER_A_HOST:-spark-worker-A}:${SPARK_WORKER_A_IP:?set SPARK_WORKER_A_IP in .env}"
+      - "${SPARK_WORKER_B_HOST:-spark-worker-B}:${SPARK_WORKER_B_IP:?set SPARK_WORKER_B_IP in .env}"
+      - "${SPARK_WORKER_C_HOST:-spark-worker-C}:${SPARK_WORKER_C_IP:?set SPARK_WORKER_C_IP in .env}"
     ports:
       - "7077:7077"   # Spark Master RPC — workers connect here
       - "8080:8080"   # Spark Master Web UI
@@ -444,10 +474,12 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      # Mỗi 15 giây poll 1 lần — khớp với gold trigger interval
-      POLL_INTERVAL_S: "15"
-      # Reload model từ MLflow mỗi 5 phút — tự nhận promote từ monitoring_dag
-      MODEL_RELOAD_INTERVAL_S: "300"
+      # Dự đoán mỗi 30 phút wall clock — demo mode, không cần near realtime.
+      POLL_INTERVAL_S: ${PREDICT_POLL_INTERVAL_S:-1800}
+      # Khi gold chưa có dữ liệu, retry ngắn hơn để dashboard có dữ liệu sớm sau khi gold xuất hiện.
+      EMPTY_RETRY_INTERVAL_S: ${PREDICT_EMPTY_RETRY_INTERVAL_S:-60}
+      # Reload model cùng cadence với prediction để giảm gọi MLflow.
+      MODEL_RELOAD_INTERVAL_S: ${MODEL_RELOAD_INTERVAL_S:-1800}
       <<: *minio-env
     volumes:
       - ./ml:/opt/ml:ro
@@ -506,7 +538,10 @@ services:
     cpus: 0.5  # Limit CPU to prevent Prometheus from starving other services (especially on single-machine)
     command:
       - |
-        sed s#__SPARK_WORKER_HOST__#$${SPARK_WORKER_HOST}#g /etc/prometheus/prometheus.yml.template > /tmp/prometheus.yml
+        sed \
+          -e s#__SPARK_WORKER_A_HOST__#$${SPARK_WORKER_A_HOST}#g \
+          -e s#__SPARK_WORKER_B_HOST__#$${SPARK_WORKER_B_HOST}#g \
+          /etc/prometheus/prometheus.yml.template > /tmp/prometheus.yml
         exec /bin/prometheus \
           --config.file=/tmp/prometheus.yml \
           --storage.tsdb.path=/prometheus \
@@ -514,11 +549,13 @@ services:
           --web.enable-lifecycle \
           --web.enable-admin-api
     environment:
-      SPARK_WORKER_HOST: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
+      SPARK_WORKER_A_HOST: ${SPARK_WORKER_A_HOST:-spark-worker-A}
+      SPARK_WORKER_B_HOST: ${SPARK_WORKER_B_HOST:-spark-worker-B}
     ports:
       - "9090:9090"
     extra_hosts:
-      - "${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}:${WORKER_IP:?set WORKER_IP in .env}"
+      - "${SPARK_WORKER_A_HOST:-spark-worker-A}:${SPARK_WORKER_A_IP:?set SPARK_WORKER_A_IP in .env}"
+      - "${SPARK_WORKER_B_HOST:-spark-worker-B}:${SPARK_WORKER_B_IP:?set SPARK_WORKER_B_IP in .env}"
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml.template:ro
       - ./monitoring/prometheus/alerts:/etc/prometheus/alerts:ro
@@ -547,7 +584,7 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       # grafana-piechart-panel built-in từ v8+, giữ lại an toàn
       GF_INSTALL_PLUGINS: grafana-piechart-panel
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/demand_forecast.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/infrastructure.json
       GF_UNIFIED_ALERTING_ENABLED: "true"
       # Credentials cho datasource PostgreSQL provisioning
       GF_POSTGRES_USER: ${POSTGRES_USER}
@@ -583,8 +620,8 @@ services:
     image: prom/node-exporter:v1.7.0
     container_name: node-exporter
     restart: unless-stopped
-    network_mode: host
-    pid: host
+    ports:
+      - "9100:9100"
     command:
       - "--path.rootfs=/host"
       - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"

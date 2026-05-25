@@ -34,8 +34,10 @@ CHECKPOINT_ROOT = (
 ).rstrip("/")
 CHECKPOINT = f"{CHECKPOINT_ROOT}/silver/response"
 
-WATERMARK_REQ = "30 minutes"
-WATERMARK_PICKUP = "15 minutes"
+WATERMARK_REQ = "10 minutes"
+WATERMARK_PICKUP = "5 minutes"
+TRIGGER_INTERVAL = f"{int(os.getenv('SPARK_TRIGGER_INTERVAL_S', '15'))} seconds"
+SOURCE_WAIT_POLL_S = int(os.getenv("SOURCE_WAIT_POLL_S", "15"))
 
 
 def wait_for_source(spark, path, timeout=600):
@@ -49,8 +51,8 @@ def wait_for_source(spark, path, timeout=600):
                 return
         except Exception as e:
             print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
-        time.sleep(10)
-        elapsed += 10
+        time.sleep(SOURCE_WAIT_POLL_S)
+        elapsed += SOURCE_WAIT_POLL_S
         print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)
     raise TimeoutError(f"Source {path} không xuất hiện sau {timeout}s")
 
@@ -78,6 +80,9 @@ def main():
     # Chờ cả 2 source sẵn sàng (jobs submit đồng thời)
     wait_for_source(spark, SILVER_REQUEST)
     wait_for_source(spark, BRONZE_PICKUP)
+
+    spark.conf.set("spark.sql.streaming.stateStore.maintenanceInterval", "30s")
+    spark.conf.set("spark.sql.streaming.minBatchesToRetain", "10")
 
     # ── Stream 1: Silver/request ──────────────────────────────────────────────
     req_stream = (
@@ -159,7 +164,7 @@ def main():
         .outputMode("append")
         .option("checkpointLocation", CHECKPOINT)
         .option("mergeSchema", "true")
-        .trigger(processingTime="2 seconds")
+        .trigger(processingTime=TRIGGER_INTERVAL)
         .start(SILVER_RESPONSE)
     )
     query.awaitTermination()

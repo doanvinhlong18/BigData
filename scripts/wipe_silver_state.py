@@ -12,9 +12,11 @@ fs = sc._jvm.org.apache.hadoop.fs.FileSystem.get(sc._jsc.hadoopConfiguration())
 Path = sc._jvm.org.apache.hadoop.fs.Path
 
 paths_to_delete = [
+    "s3a://checkpoints/silver/request",
     "s3a://checkpoints/silver/response",
     "s3a://checkpoints/silver/complete",
     "s3a://checkpoints/gold/aggregated",
+    "s3a://silver/request",
     "s3a://silver/response",
     "s3a://silver/complete",
     "s3a://gold/aggregated"

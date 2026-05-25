@@ -26,15 +26,15 @@ groups:
           summary: "⚠️ DAG pipeline_monitoring không chạy trong {{ $value }}s"
           description: "Health check DAG bị stuck. Shadow model promotion sẽ không hoạt động."
 
-      # ── predict-service không ghi prediction trong 3 phút ─────
+      # ── predict-service không ghi prediction trong 45 phút ────
       # predict-service là Python loop thuần (không phải Airflow DAG).
       # Giám sát gián tiếp qua PostgreSQL: nếu MAX(predicted_at) cách
-      # đây > 3 phút (180s) nghĩa là service bị crash hoặc không có model.
+      # đây > 45 phút (2700s) nghĩa là service bị crash hoặc không có model.
       - alert: PredictServiceStale
         expr: |
-          (time() - predict_service_last_prediction_timestamp) > 180
+          (time() - predict_service_last_prediction_timestamp) > 2700
           or absent(predict_service_last_prediction_timestamp) == 1
-        for: 2m
+        for: 10m
         labels:
           severity: critical
           component: predict_service

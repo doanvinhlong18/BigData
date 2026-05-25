@@ -6,7 +6,7 @@ Kafka → Bronze (3 bảng Delta):
   bronze/sorted_pickup_table    ← event_type == "pickup"   (NEW)
   bronze/sorted_response_table  ← event_type == "dropoff"
 
-Trigger mỗi 2s, partition by year/month/day theo event_time.
+Trigger mặc định mỗi 30s, partition by year/month/day theo event_time.
 """
 
 import os
@@ -25,7 +25,6 @@ from pyspark.sql.types import (
     StringType,
     IntegerType,
     DoubleType,
-    TimestampType,
 )
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
@@ -38,6 +37,8 @@ CHECKPOINT_BASE = f"{CHECKPOINT_ROOT}/bronze"
 BRONZE_REQUEST = "s3a://bronze/request"
 BRONZE_PICKUP = "s3a://bronze/pickup"
 BRONZE_DROPOFF = "s3a://bronze/dropoff"
+TRIGGER_INTERVAL = f"{int(os.getenv('SPARK_TRIGGER_INTERVAL_S', '30'))} seconds"
+KAFKA_MAX_OFFSETS_PER_TRIGGER = os.getenv("KAFKA_MAX_OFFSETS_PER_TRIGGER", "15000")
 
 # ── Superset schema — union của 3 event types ─────────────────────────────────
 PARSE_SCHEMA = StructType(
@@ -103,7 +104,7 @@ def main():
         .option("failOnDataLoss", "false")
         # Giới hạn số message mỗi trigger để batch đầu không quá lớn
         # (tránh timeout 600s khi có nhiều backlog từ earliest)
-        .option("maxOffsetsPerTrigger", 50000)
+        .option("maxOffsetsPerTrigger", KAFKA_MAX_OFFSETS_PER_TRIGGER)
         .load()
         .selectExpr("CAST(value AS STRING) as json_str", "timestamp as kafka_ts")
 
@@ -115,10 +116,6 @@ def main():
     ).select("d.*", "kafka_ts")
 
     def write_batch(batch_df, batch_id):
-        # Cache batch_df TRƯỚC KHI làm bất kỳ action nào.
-        # Không cache → mỗi action (count, write_req, write_pu, write_do)
-        # đều re-scan Kafka từ đầu → 4x scan, batch đầu mất ~148s.
-        # Với cache → scan 1 lần, lưu vào executor memory → ~40s.
         batch_df.cache()
 
         # ── DIAGNOSTIC LOGGING ───────────────────────────────────────────────
@@ -217,7 +214,7 @@ def main():
     query = (
         parsed.writeStream.foreachBatch(write_batch)
         .option("checkpointLocation", f"{CHECKPOINT_BASE}/kafka_to_bronze")
-        .trigger(processingTime="2 seconds")
+        .trigger(processingTime=TRIGGER_INTERVAL)
         .start()
     )
     query.awaitTermination()

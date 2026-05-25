@@ -99,12 +99,14 @@ SILVER_RESPONSE = "s3a://silver/response"  # dùng để tính pickup_delay
 GOLD_AGG = "s3a://gold/aggregated"
 CHECKPOINT_ROOT = (os.getenv("STREAMING_CHECKPOINT_BASE") or "s3a://checkpoints").rstrip("/")
 CHECKPOINT = f"{CHECKPOINT_ROOT}/gold/aggregated"
-GOLD_MAX_FILES_PER_TRIGGER = os.getenv("GOLD_MAX_FILES_PER_TRIGGER", "20")
+GOLD_MAX_FILES_PER_TRIGGER = os.getenv("GOLD_MAX_FILES_PER_TRIGGER", "10")
 
-WINDOW_DURATION = "60 minutes"
-SLIDE_DURATION = "15 minutes"
-WATERMARK = "15 minutes"
-TRIGGER_INTERVAL = "15 seconds"
+WINDOW_DURATION = os.getenv("GOLD_WINDOW_DURATION", "30 minutes")
+SLIDE_DURATION = os.getenv("GOLD_SLIDE_DURATION", "5 minutes")
+WINDOW_LOOKBACK_MINUTES = int(os.getenv("GOLD_WINDOW_LOOKBACK_MINUTES", "30"))
+WATERMARK = "5 minutes"
+TRIGGER_INTERVAL = f"{int(os.getenv('GOLD_TRIGGER_INTERVAL_S', os.getenv('SPARK_TRIGGER_INTERVAL_S', '15')))} seconds"
+SOURCE_WAIT_POLL_S = int(os.getenv("SOURCE_WAIT_POLL_S", "15"))
 
 def wait_for_source(spark, path, timeout=600):
     """Chờ Delta table tồn tại trước khi readStream."""
@@ -117,8 +119,8 @@ def wait_for_source(spark, path, timeout=600):
                 return
         except Exception as e:
             print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
-        time.sleep(10)
-        elapsed += 10
+        time.sleep(SOURCE_WAIT_POLL_S)
+        elapsed += SOURCE_WAIT_POLL_S
         print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)
     raise TimeoutError(f"Source {path} không xuất hiện sau {timeout}s")
 
@@ -166,6 +168,10 @@ def main():
             print(f"[gold] batch_id={batch_id} input_rows={row_count}", flush=True)
             if row_count == 0:
                 return
+
+            spark.conf.set("spark.sql.adaptive.enabled", "true")
+            spark.conf.set("spark.sql.streaming.stateStore.maintenanceInterval", "30s")
+            spark.conf.set("spark.sql.streaming.minBatchesToRetain", "10")
 
             # NEIGHBOR_JSON là biến global — dùng trực tiếp, không cần broadcast
 
@@ -216,9 +222,17 @@ def main():
                     col("pickup_datetime").isNotNull()
                     & (
                         col("pickup_datetime")
-                        >= F.lit(min_we) - F.expr("INTERVAL 60 MINUTES")
+                        >= F.lit(min_we) - F.expr(f"INTERVAL {WINDOW_LOOKBACK_MINUTES} MINUTES")
                     )
                     & (col("pickup_datetime") < F.lit(max_we))
+                )
+                .select(
+                    "trip_id",
+                    "request_datetime",
+                    "pickup_datetime",
+                    "PULocationID",
+                    "wav_match_flag",
+                    "share_match_flag",
                 )
             )
 
@@ -231,9 +245,16 @@ def main():
                     F.col("pickup_datetime").cast("long")
                     - F.col("request_datetime").cast("long"),
                 )
+                .repartition("PULocationID")
+                .withColumn("w", window("pickup_datetime", WINDOW_DURATION, SLIDE_DURATION))
+                .withColumn(
+                    "matched_rp_flag",
+                    F.when(F.col("request_datetime") >= F.col("w").getField("start"), F.lit(1))
+                    .otherwise(F.lit(0)),
+                )
                 .groupBy(
                     col("PULocationID").alias("zone_id"),
-                    window("pickup_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+                    col("w"),
                 )
                 .agg(
                     count("*").alias("pickup_60m"),
@@ -241,10 +262,7 @@ def main():
                     F.coalesce(stddev("pickup_delay"), F.lit(0)).alias("pickup_delay_std"),
                     # [FIX] matched_rp: đếm trips có request_datetime trong cùng window
                     # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
-                    F.sum(
-                        F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
-                        .otherwise(F.lit(0))
-                    ).alias("matched_rp"),
+                    F.sum("matched_rp_flag").alias("matched_rp"),
                     # wav_match / share_match từ silver/response
                     count(when(col("wav_match_flag") == "Y", True)).alias("wav_match"),
                     count(when(col("share_match_flag") == "Y", True)).alias("share_match"),
@@ -265,18 +283,22 @@ def main():
             dropoff_metrics = (
                 batch_df.filter(col("dropoff_datetime").isNotNull())
                 .filter("DOLocationID >= 1 AND DOLocationID <= 263")
+                .repartition("DOLocationID")
+                .withColumn("w", window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION))
+                .withColumn(
+                    "matched_rd_flag",
+                    F.when(F.col("request_datetime") >= F.col("w").getField("start"), F.lit(1))
+                    .otherwise(F.lit(0)),
+                )
                 .groupBy(
                     col("DOLocationID").alias("zone_id"),
-                    window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+                    col("w"),
                 )
                 .agg(
                     count("*").alias("dropoff_60m"),
                     # [FIX] matched_rd: đếm trips có request_datetime trong cùng window
                     # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
-                    F.sum(
-                        F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
-                        .otherwise(F.lit(0))
-                    ).alias("matched_rd"),
+                    F.sum("matched_rd_flag").alias("matched_rd"),
                 )
                 .select(
                     col("zone_id"),

@@ -25,6 +25,8 @@ CHECKPOINT_ROOT = (
     or "s3a://checkpoints"
 ).rstrip("/")
 CHECKPOINT = f"{CHECKPOINT_ROOT}/silver/request"
+TRIGGER_INTERVAL = f"{int(os.getenv('SPARK_TRIGGER_INTERVAL_S', '30'))} seconds"
+SOURCE_WAIT_POLL_S = int(os.getenv("SOURCE_WAIT_POLL_S", "30"))
 
 
 def wait_for_source(spark, path, timeout=600):
@@ -40,8 +42,8 @@ def wait_for_source(spark, path, timeout=600):
                 return
         except Exception as e:
             print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
-        time.sleep(10)
-        elapsed += 10
+        time.sleep(SOURCE_WAIT_POLL_S)
+        elapsed += SOURCE_WAIT_POLL_S
         print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)
     raise TimeoutError(f"Source {path} không xuất hiện sau {timeout}s")
 
@@ -71,7 +73,7 @@ def main():
         spark.readStream.format("delta")
         .load(BRONZE_REQUEST)
         .withColumn("request_datetime", to_timestamp(col("request_datetime")))
-        .withWatermark("request_datetime", "15 minutes")
+        .withWatermark("request_datetime", "5 minutes")
         .filter(
             col("trip_id").isNotNull()
             & col("PULocationID").isNotNull()
@@ -79,7 +81,7 @@ def main():
             & col("PULocationID").between(1, 263)
             & col("DOLocationID").between(1, 263)
         )
-        .dropDuplicates(["trip_id"])
+        # trip_id là unique trong event stream; dropDuplicates giữ state lớn hơn cần thiết
         .select(
             "trip_id",
             "hvfhs_license_num",
@@ -98,7 +100,7 @@ def main():
         stream.writeStream.format("delta")
         .outputMode("append")
         .option("checkpointLocation", CHECKPOINT)
-        .trigger(processingTime="10 seconds")
+        .trigger(processingTime=TRIGGER_INTERVAL)
         .start(SILVER_REQUEST)
     )
     query.awaitTermination()
