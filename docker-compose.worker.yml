@@ -102,13 +102,13 @@ services:
     image: prom/node-exporter:v1.7.0
     container_name: node-exporter-worker
     restart: unless-stopped
-    network_mode: host
-    pid: host
+    ports:
+      - "9100:9100"
     command:
       - "--path.rootfs=/host"
       - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
     volumes:
-      - /:/host:ro,rslave
+      - /:/host:ro
 
   # ── cADVISOR (optional) ────────────────────────────────────────
   # Container resource metrics for worker machine.
