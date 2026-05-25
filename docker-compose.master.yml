@@ -208,6 +208,15 @@ services:
       # Executor (trên worker machine khác) cần external address qua LAN
       # Nếu chỉ 1 máy (local), để giống KAFKA_BOOTSTRAP_SERVERS
       KAFKA_BOOTSTRAP_SERVERS_EXECUTOR: ${KAFKA_BOOTSTRAP_EXTERNAL}
+      STREAMING_CHECKPOINT_BASE: ${STREAMING_CHECKPOINT_BASE:-s3a://checkpoints}
+      STATEFUL_CHECKPOINT_BASE: ${STATEFUL_CHECKPOINT_BASE:-s3a://checkpoints}
+      STATEFUL_STREAM_MASTER: ${STATEFUL_STREAM_MASTER:-spark://spark-master:7077}
+      GOLD_MAX_FILES_PER_TRIGGER: ${GOLD_MAX_FILES_PER_TRIGGER:-20}
+      JOB5_EXECUTOR_CORES: ${JOB5_EXECUTOR_CORES:-2}
+      JOB5_TOTAL_CORES: ${JOB5_TOTAL_CORES:-6}
+      JOB5_EXECUTOR_MEMORY: ${JOB5_EXECUTOR_MEMORY:-5g}
+      JOB5_DRIVER_MEMORY: ${JOB5_DRIVER_MEMORY:-2g}
+      JOB5_SHUFFLE_PARTITIONS: ${JOB5_SHUFFLE_PARTITIONS:-24}
     extra_hosts:
       # Driver chạy trong spark-master cần resolve hostname worker về IP LAN của máy worker.
       - "${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}:${WORKER_IP:?set WORKER_IP in .env}"
@@ -229,6 +238,7 @@ services:
       - ./scripts:/opt/spark/app/scripts
       - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
       - ${DATASET_PATH}:/datasets:ro
+      - spark-checkpoints:/opt/spark/checkpoints
     healthcheck:
       test: curl -f http://localhost:8080
       interval: 30s
@@ -661,6 +671,7 @@ volumes:
   mlflow-data:
   grafana-data:
   prometheus-data:
+  spark-checkpoints:
 
 networks:
   default:

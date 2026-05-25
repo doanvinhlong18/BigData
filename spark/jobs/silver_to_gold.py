@@ -77,6 +77,7 @@ import time
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark import StorageLevel
 from pyspark.sql.functions import (
     avg,
     coalesce,
@@ -96,7 +97,9 @@ MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 SILVER_COMPLETE = "s3a://silver/complete"
 SILVER_RESPONSE = "s3a://silver/response"  # dùng để tính pickup_delay
 GOLD_AGG = "s3a://gold/aggregated"
-CHECKPOINT = "s3a://checkpoints/gold/aggregated"
+CHECKPOINT_ROOT = (os.getenv("STREAMING_CHECKPOINT_BASE") or "s3a://checkpoints").rstrip("/")
+CHECKPOINT = f"{CHECKPOINT_ROOT}/gold/aggregated"
+GOLD_MAX_FILES_PER_TRIGGER = os.getenv("GOLD_MAX_FILES_PER_TRIGGER", "20")
 
 WINDOW_DURATION = "60 minutes"
 SLIDE_DURATION = "15 minutes"
@@ -145,209 +148,234 @@ def main():
     # Watermark trên dropoff_datetime (event muộn nhất, luôn có) để drive window
     complete_stream = (
         spark.readStream.format("delta")
+        .option("maxFilesPerTrigger", GOLD_MAX_FILES_PER_TRIGGER)
         .load(SILVER_COMPLETE)
         .withWatermark("dropoff_datetime", WATERMARK)
     )
 
     def aggregate_and_upsert(batch_df, batch_id):
-        if batch_df.isEmpty():
-            return
+        started = time.time()
+        print(f"[gold] batch_id={batch_id} START", flush=True)
 
-        # NEIGHBOR_JSON là biến global — dùng trực tiếp, không cần broadcast
-
-        # ── 1. DEMAND metrics — groupBy PULocationID + window request_datetime ─
-        # Tên cột đồng bộ notebook: wav_req, aar_req, share_req, uber_req
-        # Bỏ requests_15m (feature 15m đã loại khỏi feature set)
-        demand_60m = (
-            batch_df.filter("PULocationID >= 1 AND PULocationID <= 263")
-            .groupBy(
-                col("PULocationID").alias("zone_id"),
-                window("request_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
-            )
-            .agg(
-                count("*").alias("requests_60m"),
-                count(when(col("wav_request_flag") == "Y", True)).alias("wav_req"),
-                count(when(col("access_a_ride_flag") == "Y", True)).alias("aar_req"),
-                count(when(col("shared_request_flag") == "Y", True)).alias("share_req"),
-                count(when(col("hvfhs_license_num") == "HV0003", True)).alias("uber_req"),
-            )
-            .select(
-                col("zone_id"),
-                col("w").getField("end").alias("window_end"),
-                "requests_60m",
-                "wav_req",
-                "aar_req",
-                "share_req",
-                "uber_req",
-            )
-        )
-
-        # ── 2. PICKUP metrics — batch-read silver/response ────────────────────
-        # pickup_delay = pickup_datetime - request_datetime là chỉ số của giai
-        # đoạn response (request đã được đón), không phải complete (đã dropoff).
-        # Đọc từ silver/response để tính delay trên TẤT CẢ trips đã pickup,
-        # kể cả trip chưa có dropoff — tránh bias selection chỉ trip hoàn chỉnh.
-        we_rows = demand_60m.select("window_end").distinct().collect()
-        if not we_rows:
-            return
-        min_we = min(r["window_end"] for r in we_rows)
-        max_we = max(r["window_end"] for r in we_rows)
-
-        response_df = (
-            spark.read.format("delta")
-            .load(SILVER_RESPONSE)
-            .filter(
-                col("pickup_datetime").isNotNull()
-                & (
-                    col("pickup_datetime")
-                    >= F.lit(min_we) - F.expr("INTERVAL 60 MINUTES")
-                )
-                & (col("pickup_datetime") < F.lit(max_we))
-            )
-        )
-
-        pickup_metrics = (
-            response_df.filter(F.col("pickup_datetime") >= F.col("request_datetime"))
-            .filter("PULocationID >= 1 AND PULocationID <= 263")
-            # precompute delay
-            .withColumn(
-                "pickup_delay",
-                F.col("pickup_datetime").cast("long")
-                - F.col("request_datetime").cast("long"),
-            )
-            .groupBy(
-                col("PULocationID").alias("zone_id"),
-                window("pickup_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
-            )
-            .agg(
-                count("*").alias("pickup_60m"),
-                avg("pickup_delay").alias("pickup_delay_mean"),
-                F.coalesce(stddev("pickup_delay"), F.lit(0)).alias("pickup_delay_std"),
-                # [FIX] matched_rp: đếm trips có request_datetime trong cùng window
-                # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
-                F.sum(
-                    F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
-                    .otherwise(F.lit(0))
-                ).alias("matched_rp"),
-                # wav_match / share_match từ silver/response
-                count(when(col("wav_match_flag") == "Y", True)).alias("wav_match"),
-                count(when(col("share_match_flag") == "Y", True)).alias("share_match"),
-            )
-            .select(
-                col("zone_id"),
-                col("w").getField("end").alias("window_end"),
-                "pickup_60m",
-                "pickup_delay_mean",
-                "pickup_delay_std",
-                "matched_rp",
-                "wav_match",
-                "share_match",
-            )
-        )
-
-        # ── 3. DROPOFF metrics — groupBy DOLocationID + window dropoff_datetime ─
-        dropoff_metrics = (
-            batch_df.filter(col("dropoff_datetime").isNotNull())
-            .filter("DOLocationID >= 1 AND DOLocationID <= 263")
-            .groupBy(
-                col("DOLocationID").alias("zone_id"),
-                window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
-            )
-            .agg(
-                count("*").alias("dropoff_60m"),
-                # [FIX] matched_rd: đếm trips có request_datetime trong cùng window
-                # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
-                F.sum(
-                    F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
-                    .otherwise(F.lit(0))
-                ).alias("matched_rd"),
-            )
-            .select(
-                col("zone_id"),
-                col("w").getField("end").alias("window_end"),
-                "dropoff_60m",
-                "matched_rd",
-            )
-        )
-
-        # ── 4. TRIP STATS — groupBy PULocationID + window dropoff_datetime ──────
-        # Filter trips_valid như notebook: trip_miles, trip_time, fare có giá trị hợp lệ
-        # [THÊM] avg_bcf, avg_tolls, avg_congestion_surcharge, avg_airport_fee,
-        #        avg_sales_tax, avg_cbd_congestion_fee — đồng bộ notebook dropoff_stats
-        trip_stats = (
-            batch_df.filter(
-                col("trip_miles").between(0.3, 500)
-                & col("trip_time").between(200, 20000)
-                & col("base_passenger_fare").between(1, 1500)
-                & col("driver_pay").between(1, 1500)
-            )
-            .filter("PULocationID >= 1 AND PULocationID <= 263")
-            .groupBy(
-                col("PULocationID").alias("zone_id"),
-                window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
-            )
-            .agg(
-                avg("trip_time").alias("avg_trip_time"),
-                avg("base_passenger_fare").alias("avg_fare"),
-                avg("trip_miles").alias("avg_distance"),
-                avg("driver_pay").alias("avg_driver_pay"),
-                avg("tips").alias("avg_tips"),
-                # [THÊM] fee/surcharge features — đồng bộ notebook dropoff_stats
-                avg("bcf").alias("avg_bcf"),
-                avg("tolls").alias("avg_tolls"),
-                avg("congestion_surcharge").alias("avg_congestion_surcharge"),
-                avg("airport_fee").alias("avg_airport_fee"),
-                avg("sales_tax").alias("avg_sales_tax"),
-                avg("cbd_congestion_fee").alias("avg_cbd_congestion_fee"),
-            )
-            .select(
-                col("zone_id"),
-                col("w").getField("end").alias("window_end"),
-                "avg_trip_time",
-                "avg_fare",
-                "avg_distance",
-                "avg_driver_pay",
-                "avg_tips",
-                "avg_bcf",
-                "avg_tolls",
-                "avg_congestion_surcharge",
-                "avg_airport_fee",
-                "avg_sales_tax",
-                "avg_cbd_congestion_fee",
-            )
-        )
-
-        # ── 5. Merge all metrics ──────────────────────────────────────────────
-        gold = (
-            demand_60m.join(pickup_metrics, on=["zone_id", "window_end"], how="left")
-            .join(dropoff_metrics, on=["zone_id", "window_end"], how="left")
-            .join(trip_stats, on=["zone_id", "window_end"], how="left")
-        )
-
-        # ── 6. UPSERT vào gold/aggregated ────────────────────────────────────
-        # Các features sau KHÔNG lưu vào gold — tính trong predict_service:
-        #   - neighbor (requests_60m, pickup_delay_mean, num_neighbors)
-        #     → feature_builder dùng ZONE_NEIGHBORS dict tĩnh, pandas merge nhanh
-        #   - imbalance → compute_imbalance() trong feature_builder
-        #   - temporal  → _add_temporal() trong feature_builder từ window_end
-        if gold.isEmpty():
-            return
+        batch_df = batch_df.persist(StorageLevel.MEMORY_AND_DISK)
+        demand_60m = None
+        gold = None
 
         try:
-            dt = DeltaTable.forPath(spark, GOLD_AGG)
-            (
-                dt.alias("old")
-                .merge(
-                    gold.alias("new"),
-                    "old.zone_id = new.zone_id AND old.window_end = new.window_end",
+            row_count = batch_df.count()
+            print(f"[gold] batch_id={batch_id} input_rows={row_count}", flush=True)
+            if row_count == 0:
+                return
+
+            # NEIGHBOR_JSON là biến global — dùng trực tiếp, không cần broadcast
+
+            # ── 1. DEMAND metrics — groupBy PULocationID + window request_datetime ─
+            # Tên cột đồng bộ notebook: wav_req, aar_req, share_req, uber_req
+            # Bỏ requests_15m (feature 15m đã loại khỏi feature set)
+            demand_60m = (
+                batch_df.filter("PULocationID >= 1 AND PULocationID <= 263")
+                .groupBy(
+                    col("PULocationID").alias("zone_id"),
+                    window("request_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
                 )
-                .whenMatchedUpdateAll()
-                .whenNotMatchedInsertAll()
-                .execute()
+                .agg(
+                    count("*").alias("requests_60m"),
+                    count(when(col("wav_request_flag") == "Y", True)).alias("wav_req"),
+                    count(when(col("access_a_ride_flag") == "Y", True)).alias("aar_req"),
+                    count(when(col("shared_request_flag") == "Y", True)).alias("share_req"),
+                    count(when(col("hvfhs_license_num") == "HV0003", True)).alias("uber_req"),
+                )
+                .select(
+                    col("zone_id"),
+                    col("w").getField("end").alias("window_end"),
+                    "requests_60m",
+                    "wav_req",
+                    "aar_req",
+                    "share_req",
+                    "uber_req",
+                )
+                .persist(StorageLevel.MEMORY_AND_DISK)
             )
-        except Exception:
-            # Bảng chưa tồn tại → tạo mới
-            gold.write.format("delta").mode("overwrite").save(GOLD_AGG)
+
+            # ── 2. PICKUP metrics — batch-read silver/response ────────────────────
+            # pickup_delay = pickup_datetime - request_datetime là chỉ số của giai
+            # đoạn response (request đã được đón), không phải complete (đã dropoff).
+            # Đọc từ silver/response để tính delay trên TẤT CẢ trips đã pickup,
+            # kể cả trip chưa có dropoff — tránh bias selection chỉ trip hoàn chỉnh.
+            we_rows = demand_60m.select("window_end").distinct().collect()
+            print(f"[gold] batch_id={batch_id} windows={len(we_rows)}", flush=True)
+            if not we_rows:
+                return
+            min_we = min(r["window_end"] for r in we_rows)
+            max_we = max(r["window_end"] for r in we_rows)
+
+            response_df = (
+                spark.read.format("delta")
+                .load(SILVER_RESPONSE)
+                .filter(
+                    col("pickup_datetime").isNotNull()
+                    & (
+                        col("pickup_datetime")
+                        >= F.lit(min_we) - F.expr("INTERVAL 60 MINUTES")
+                    )
+                    & (col("pickup_datetime") < F.lit(max_we))
+                )
+            )
+
+            pickup_metrics = (
+                response_df.filter(F.col("pickup_datetime") >= F.col("request_datetime"))
+                .filter("PULocationID >= 1 AND PULocationID <= 263")
+                # precompute delay
+                .withColumn(
+                    "pickup_delay",
+                    F.col("pickup_datetime").cast("long")
+                    - F.col("request_datetime").cast("long"),
+                )
+                .groupBy(
+                    col("PULocationID").alias("zone_id"),
+                    window("pickup_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+                )
+                .agg(
+                    count("*").alias("pickup_60m"),
+                    avg("pickup_delay").alias("pickup_delay_mean"),
+                    F.coalesce(stddev("pickup_delay"), F.lit(0)).alias("pickup_delay_std"),
+                    # [FIX] matched_rp: đếm trips có request_datetime trong cùng window
+                    # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
+                    F.sum(
+                        F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
+                        .otherwise(F.lit(0))
+                    ).alias("matched_rp"),
+                    # wav_match / share_match từ silver/response
+                    count(when(col("wav_match_flag") == "Y", True)).alias("wav_match"),
+                    count(when(col("share_match_flag") == "Y", True)).alias("share_match"),
+                )
+                .select(
+                    col("zone_id"),
+                    col("w").getField("end").alias("window_end"),
+                    "pickup_60m",
+                    "pickup_delay_mean",
+                    "pickup_delay_std",
+                    "matched_rp",
+                    "wav_match",
+                    "share_match",
+                )
+            )
+
+            # ── 3. DROPOFF metrics — groupBy DOLocationID + window dropoff_datetime ─
+            dropoff_metrics = (
+                batch_df.filter(col("dropoff_datetime").isNotNull())
+                .filter("DOLocationID >= 1 AND DOLocationID <= 263")
+                .groupBy(
+                    col("DOLocationID").alias("zone_id"),
+                    window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+                )
+                .agg(
+                    count("*").alias("dropoff_60m"),
+                    # [FIX] matched_rd: đếm trips có request_datetime trong cùng window
+                    # Đồng bộ notebook: sum(when(request_datetime >= window.start, 1))
+                    F.sum(
+                        F.when(F.col("request_datetime") >= F.col("w.start"), F.lit(1))
+                        .otherwise(F.lit(0))
+                    ).alias("matched_rd"),
+                )
+                .select(
+                    col("zone_id"),
+                    col("w").getField("end").alias("window_end"),
+                    "dropoff_60m",
+                    "matched_rd",
+                )
+            )
+
+            # ── 4. TRIP STATS — groupBy PULocationID + window dropoff_datetime ──────
+            # Filter trips_valid như notebook: trip_miles, trip_time, fare có giá trị hợp lệ
+            # [THÊM] avg_bcf, avg_tolls, avg_congestion_surcharge, avg_airport_fee,
+            #        avg_sales_tax, avg_cbd_congestion_fee — đồng bộ notebook dropoff_stats
+            trip_stats = (
+                batch_df.filter(
+                    col("trip_miles").between(0.3, 500)
+                    & col("trip_time").between(200, 20000)
+                    & col("base_passenger_fare").between(1, 1500)
+                    & col("driver_pay").between(1, 1500)
+                )
+                .filter("PULocationID >= 1 AND PULocationID <= 263")
+                .groupBy(
+                    col("PULocationID").alias("zone_id"),
+                    window("dropoff_datetime", WINDOW_DURATION, SLIDE_DURATION).alias("w"),
+                )
+                .agg(
+                    avg("trip_time").alias("avg_trip_time"),
+                    avg("base_passenger_fare").alias("avg_fare"),
+                    avg("trip_miles").alias("avg_distance"),
+                    avg("driver_pay").alias("avg_driver_pay"),
+                    avg("tips").alias("avg_tips"),
+                    # [THÊM] fee/surcharge features — đồng bộ notebook dropoff_stats
+                    avg("bcf").alias("avg_bcf"),
+                    avg("tolls").alias("avg_tolls"),
+                    avg("congestion_surcharge").alias("avg_congestion_surcharge"),
+                    avg("airport_fee").alias("avg_airport_fee"),
+                    avg("sales_tax").alias("avg_sales_tax"),
+                    avg("cbd_congestion_fee").alias("avg_cbd_congestion_fee"),
+                )
+                .select(
+                    col("zone_id"),
+                    col("w").getField("end").alias("window_end"),
+                    "avg_trip_time",
+                    "avg_fare",
+                    "avg_distance",
+                    "avg_driver_pay",
+                    "avg_tips",
+                    "avg_bcf",
+                    "avg_tolls",
+                    "avg_congestion_surcharge",
+                    "avg_airport_fee",
+                    "avg_sales_tax",
+                    "avg_cbd_congestion_fee",
+                )
+            )
+
+            # ── 5. Merge all metrics ──────────────────────────────────────────────
+            gold = (
+                demand_60m.join(pickup_metrics, on=["zone_id", "window_end"], how="left")
+                .join(dropoff_metrics, on=["zone_id", "window_end"], how="left")
+                .join(trip_stats, on=["zone_id", "window_end"], how="left")
+                .persist(StorageLevel.MEMORY_AND_DISK)
+            )
+
+            # ── 6. UPSERT vào gold/aggregated ────────────────────────────────────
+            # Các features sau KHÔNG lưu vào gold — tính trong predict_service:
+            #   - neighbor (requests_60m, pickup_delay_mean, num_neighbors)
+            #     → feature_builder dùng ZONE_NEIGHBORS dict tĩnh, pandas merge nhanh
+            #   - imbalance → compute_imbalance() trong feature_builder
+            #   - temporal  → _add_temporal() trong feature_builder từ window_end
+            gold_count = gold.count()
+            print(f"[gold] batch_id={batch_id} gold_rows={gold_count}", flush=True)
+            if gold_count == 0:
+                return
+
+            try:
+                dt = DeltaTable.forPath(spark, GOLD_AGG)
+                (
+                    dt.alias("old")
+                    .merge(
+                        gold.alias("new"),
+                        "old.zone_id = new.zone_id AND old.window_end = new.window_end",
+                    )
+                    .whenMatchedUpdateAll()
+                    .whenNotMatchedInsertAll()
+                    .execute()
+                )
+            except Exception:
+                # Bảng chưa tồn tại → tạo mới
+                gold.write.format("delta").mode("overwrite").save(GOLD_AGG)
+
+            elapsed = time.time() - started
+            print(f"[gold] batch_id={batch_id} DONE in {elapsed:.1f}s", flush=True)
+        finally:
+            if gold is not None:
+                gold.unpersist()
+            if demand_60m is not None:
+                demand_60m.unpersist()
+            batch_df.unpersist()
 
     # ── Streaming query ───────────────────────────────────────────────────────
     query = (

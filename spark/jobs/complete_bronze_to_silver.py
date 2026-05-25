@@ -37,7 +37,12 @@ MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 BRONZE_DROPOFF = "s3a://bronze/dropoff"
 SILVER_RESPONSE = "s3a://silver/response"
 SILVER_COMPLETE = "s3a://silver/complete"
-CHECKPOINT = "s3a://checkpoints/silver/complete"
+CHECKPOINT_ROOT = (
+    os.getenv("STATEFUL_CHECKPOINT_BASE")
+    or os.getenv("STREAMING_CHECKPOINT_BASE")
+    or "s3a://checkpoints"
+).rstrip("/")
+CHECKPOINT = f"{CHECKPOINT_ROOT}/silver/complete"
 
 # ── WATERMARK CONFIG ─────────────────────────────────────────
 RESPONSE_WATERMARK = "2 hours"
@@ -111,8 +116,6 @@ def main():
             "wav_request_flag",
             "access_a_ride_flag",
             "shared_request_flag",
-            "shared_match_flag",
-            "wav_match_flag",
         )
     )
 
@@ -156,10 +159,10 @@ def main():
         response_stream,
         on=[
             dropoff_stream.trip_id == response_stream.trip_id,
-            # ⚠️ Event-time constraint để giới hạn state
+            # Event-time constraints để giới hạn state store.
             dropoff_stream.dropoff_datetime >= response_stream.pickup_datetime,
-            # dropoff_stream.dropoff_datetime
-            # <= response_stream.pickup_datetime + expr("INTERVAL 2 HOURS"),
+            dropoff_stream.dropoff_datetime
+            <= response_stream.pickup_datetime + expr("INTERVAL 6 HOURS"),
         ],
         how="inner",
     ).select(

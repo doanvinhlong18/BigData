@@ -19,7 +19,12 @@ MINIO_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 BRONZE_REQUEST = "s3a://bronze/request"
 SILVER_REQUEST = "s3a://silver/request"
-CHECKPOINT = "s3a://checkpoints/silver/request"
+CHECKPOINT_ROOT = (
+    os.getenv("STATEFUL_CHECKPOINT_BASE")
+    or os.getenv("STREAMING_CHECKPOINT_BASE")
+    or "s3a://checkpoints"
+).rstrip("/")
+CHECKPOINT = f"{CHECKPOINT_ROOT}/silver/request"
 
 
 def wait_for_source(spark, path, timeout=600):

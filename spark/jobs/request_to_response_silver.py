@@ -27,7 +27,12 @@ MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 SILVER_REQUEST = "s3a://silver/request"
 BRONZE_PICKUP = "s3a://bronze/pickup"
 SILVER_RESPONSE = "s3a://silver/response"
-CHECKPOINT = "s3a://checkpoints/silver/response"
+CHECKPOINT_ROOT = (
+    os.getenv("STATEFUL_CHECKPOINT_BASE")
+    or os.getenv("STREAMING_CHECKPOINT_BASE")
+    or "s3a://checkpoints"
+).rstrip("/")
+CHECKPOINT = f"{CHECKPOINT_ROOT}/silver/response"
 
 WATERMARK_REQ = "30 minutes"
 WATERMARK_PICKUP = "15 minutes"

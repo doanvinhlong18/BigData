@@ -18,10 +18,12 @@ KAFKA_BS="${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}"
 KAFKA_HOST="${KAFKA_BS%%:*}"
 KAFKA_PORT="${KAFKA_BS##*:}"
 KAFKA_BS_EXECUTOR="${KAFKA_BOOTSTRAP_SERVERS_EXECUTOR:-${KAFKA_BS}}"
+CHECKPOINT_BASE="${STREAMING_CHECKPOINT_BASE:-s3a://checkpoints}"
+STATEFUL_CHECKPOINT_BASE_EFFECTIVE="${STATEFUL_CHECKPOINT_BASE:-${CHECKPOINT_BASE}}"
+STATEFUL_STREAM_MASTER="${STATEFUL_STREAM_MASTER:-${SPARK_MASTER}}"
 
 # ── Common spark-submit flags ─────────────────────────────────────────────────
-COMMON="spark-submit \
-  --master ${SPARK_MASTER} \
+COMMON_BASE="spark-submit \
   --deploy-mode client \
   --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
   --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
@@ -41,13 +43,15 @@ COMMON="spark-submit \
   --conf spark.memory.fraction=0.7 \
   --conf spark.memory.storageFraction=0.3 \
   --conf spark.executor.memoryOverhead=256m"
+COMMON="${COMMON_BASE} --master ${SPARK_MASTER}"
+COMMON_STATEFUL="${COMMON_BASE} --master ${STATEFUL_STREAM_MASTER}"
 
 # ── Tài nguyên mỗi job ────────────────────────────────────────────────────────
 RES_JOB1="--executor-cores 2 --total-executor-cores 4 --executor-memory 3g --driver-memory 1g --conf spark.sql.shuffle.partitions=12"
 RES_JOB2="--executor-cores 1 --total-executor-cores 2 --executor-memory 2g --driver-memory 1g --conf spark.sql.shuffle.partitions=8"
 RES_JOB3="--executor-cores 1 --total-executor-cores 2 --executor-memory 2g --driver-memory 1g --conf spark.sql.shuffle.partitions=8"
 RES_JOB4="--executor-cores 1 --total-executor-cores 2 --executor-memory 2g --driver-memory 1g --conf spark.sql.shuffle.partitions=8"
-RES_JOB5="--executor-cores 1 --total-executor-cores 1 --executor-memory 1.5g --driver-memory 1g --conf spark.sql.shuffle.partitions=6"
+RES_JOB5="--executor-cores ${JOB5_EXECUTOR_CORES:-2} --total-executor-cores ${JOB5_TOTAL_CORES:-6} --executor-memory ${JOB5_EXECUTOR_MEMORY:-5g} --driver-memory ${JOB5_DRIVER_MEMORY:-2g} --conf spark.sql.shuffle.partitions=${JOB5_SHUFFLE_PARTITIONS:-24}"
 
 
 # ── check_delta: kiểm tra Delta table có commit đầu tiên chưa ─────────────────
@@ -166,6 +170,9 @@ echo " Spark Master : ${SPARK_MASTER}"
 echo " Driver Host  : ${DRIVER_HOST}"
 echo " MinIO        : ${MINIO_EP}"
 echo " Kafka        : ${KAFKA_BS}"
+echo " Checkpoints  : ${CHECKPOINT_BASE}"
+echo " Stateful CP  : ${STATEFUL_CHECKPOINT_BASE_EFFECTIVE}"
+echo " Stateful run : ${STATEFUL_STREAM_MASTER}"
 echo "================================================================"
 echo ""
 
@@ -207,7 +214,7 @@ echo "      PID: ${JOB1_PID}"
     elapsed=$((elapsed + 10)); sleep 10
     echo "[2/5-launcher]   ... chưa sẵn sàng (${elapsed}s)"
   done
-  exec ${COMMON} ${RES_JOB2} "${JOBS_DIR}/request_bronze_to_silver.py"
+  exec ${COMMON_STATEFUL} ${RES_JOB2} "${JOBS_DIR}/request_bronze_to_silver.py"
 ) &
 JOB2_PID=$!
 ALL_PIDS="${ALL_PIDS} ${JOB2_PID}"
@@ -231,7 +238,7 @@ echo "      [2/5] Launcher PID: ${JOB2_PID}"
     elapsed=$((elapsed + 10)); sleep 10
     echo "[3/5-launcher]   ... silver/request=${rs} bronze/pickup=${rp} (${elapsed}s)"
   done
-  exec ${COMMON} ${RES_JOB3} "${JOBS_DIR}/request_to_response_silver.py"
+  exec ${COMMON_STATEFUL} ${RES_JOB3} "${JOBS_DIR}/request_to_response_silver.py"
 ) &
 JOB3_PID=$!
 ALL_PIDS="${ALL_PIDS} ${JOB3_PID}"
@@ -255,7 +262,7 @@ echo "      [3/5] Launcher PID: ${JOB3_PID}"
     elapsed=$((elapsed + 10)); sleep 10
     echo "[4/5-launcher]   ... silver/response=${rr} bronze/dropoff=${rd} (${elapsed}s)"
   done
-  exec ${COMMON} ${RES_JOB4} "${JOBS_DIR}/complete_bronze_to_silver.py"
+  exec ${COMMON_STATEFUL} ${RES_JOB4} "${JOBS_DIR}/complete_bronze_to_silver.py"
 ) &
 JOB4_PID=$!
 ALL_PIDS="${ALL_PIDS} ${JOB4_PID}"
