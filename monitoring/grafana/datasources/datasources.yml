@@ -3,6 +3,7 @@ apiVersion: 1
 datasources:
   # Prometheus: infrastructure + airflow + kafka metrics
   - name: Prometheus
+    uid: Prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
@@ -18,6 +19,7 @@ datasources:
   # PostgreSQL: predictions_monitoring — datasource chính cho ML panels
   # Grafana đọc thẳng SQL, không cần metrics-api làm trung gian
   - name: PostgreSQL
+    uid: PostgreSQL
     type: postgres
     access: proxy
     url: postgres:5432

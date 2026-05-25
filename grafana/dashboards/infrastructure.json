@@ -43,13 +43,13 @@
     },
     {
       "id": 2,
-      "title": "Kafka — Consumer Lag (nyc_taxi_events)",
+      "title": "Kafka — Partition End Offset",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "kafka_consumer_group_lag{topic='nyc_taxi_events'}",
-          "legendFormat": "Group: {{consumer_group}} P{{partition}}",
+          "expr": "kafka_log_log_end_offset{topic=\"nyc_taxi_events\"}",
+          "legendFormat": "Partition {{partition}}",
           "datasource": "Prometheus"
         }
       ],
@@ -73,7 +73,7 @@
       "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "rate(kafka_server_brokertopicmetrics_messagesin_total[1m])",
+          "expr": "kafka_server_brokertopicmetrics_messagesin_rate1m{topic=\"nyc_taxi_events\"}",
           "legendFormat": "Messages/sec",
           "datasource": "Prometheus"
         }
@@ -86,7 +86,7 @@
       "gridPos": { "x": 0, "y": 12, "w": 4, "h": 4 },
       "targets": [
         {
-          "expr": "spark_master_workers_alive",
+          "expr": "metrics_master_aliveWorkers_Value",
           "legendFormat": "Workers",
           "datasource": "Prometheus"
         }
@@ -110,7 +110,7 @@
       "gridPos": { "x": 4, "y": 12, "w": 4, "h": 4 },
       "targets": [
         {
-          "expr": "spark_master_apps_running",
+          "expr": "metrics_master_apps_Value",
           "legendFormat": "Running Jobs",
           "datasource": "Prometheus"
         }
@@ -129,24 +129,24 @@
     },
     {
       "id": 6,
-      "title": "Gold Table Lag (minutes)",
+      "title": "Spark — Worker Cores Used",
       "type": "stat",
       "gridPos": { "x": 8, "y": 12, "w": 4, "h": 4 },
       "targets": [
         {
-          "expr": "nyc_taxi_gold_lag_minutes",
-          "legendFormat": "Gold Lag",
+          "expr": "sum(metrics_worker_coresUsed_Value)",
+          "legendFormat": "Used cores",
           "datasource": "Prometheus"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "m",
+          "unit": "none",
           "thresholds": {
             "steps": [
               { "color": "green", "value": 0 },
-              { "color": "yellow", "value": 20 },
-              { "color": "red", "value": 30 }
+              { "color": "yellow", "value": 18 },
+              { "color": "red", "value": 23 }
             ]
           }
         }
@@ -154,13 +154,13 @@
     },
     {
       "id": 7,
-      "title": "Prediction Lag (minutes)",
+      "title": "Predict — Last Prediction Age",
       "type": "stat",
       "gridPos": { "x": 12, "y": 12, "w": 4, "h": 4 },
       "targets": [
         {
-          "expr": "nyc_taxi_pred_lag_minutes",
-          "legendFormat": "Pred Lag",
+          "expr": "(time() - predict_service_last_prediction_timestamp) / 60",
+          "legendFormat": "Minutes since prediction",
           "datasource": "Prometheus"
         }
       ],
@@ -179,24 +179,23 @@
     },
     {
       "id": 8,
-      "title": "Avg Prediction Confidence",
+      "title": "Predict — Model Loaded",
       "type": "stat",
       "gridPos": { "x": 16, "y": 12, "w": 4, "h": 4 },
       "targets": [
         {
-          "expr": "nyc_taxi_avg_pred_confidence",
-          "legendFormat": "Confidence",
+          "expr": "predict_service_model_loaded",
+          "legendFormat": "Model loaded",
           "datasource": "Prometheus"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
+          "unit": "none",
           "thresholds": {
             "steps": [
               { "color": "red", "value": 0 },
-              { "color": "yellow", "value": 0.45 },
-              { "color": "green", "value": 0.65 }
+              { "color": "green", "value": 1 }
             ]
           }
         }
@@ -204,24 +203,24 @@
     },
     {
       "id": 9,
-      "title": "Weather Fallback Rate (model_b %)",
+      "title": "Predict — Zones Last Slot",
       "type": "stat",
       "gridPos": { "x": 20, "y": 12, "w": 4, "h": 4 },
       "targets": [
         {
-          "expr": "nyc_taxi_weather_fallback_pct",
-          "legendFormat": "Fallback %",
+          "expr": "predict_service_zones_predicted_last_slot",
+          "legendFormat": "Zones",
           "datasource": "Prometheus"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
+          "unit": "none",
           "thresholds": {
             "steps": [
-              { "color": "green", "value": 0 },
-              { "color": "yellow", "value": 30 },
-              { "color": "red", "value": 50 }
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 1 },
+              { "color": "green", "value": 200 }
             ]
           }
         }
@@ -281,7 +280,7 @@
       "gridPos": { "x": 16, "y": 16, "w": 8, "h": 8 },
       "targets": [
         {
-          "expr": "(1 - (node_filesystem_avail_bytes{mountpoint='/'} / node_filesystem_size_bytes{mountpoint='/'})) * 100",
+          "expr": "max by(instance) ((1 - (node_filesystem_avail_bytes{mountpoint=~\"/|/var/lib|/mnt/docker-desktop-disk\"} / node_filesystem_size_bytes{mountpoint=~\"/|/var/lib|/mnt/docker-desktop-disk\"})) * 100)",
           "legendFormat": "Disk %",
           "datasource": "Prometheus"
         }
@@ -301,8 +300,8 @@
       "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "container_memory_usage_bytes{container_label_com_docker_compose_service=~'kafka|spark-master|airflow|minio'} / 1024 / 1024",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "expr": "container_memory_usage_bytes{id=\"/\"} / 1024 / 1024",
+          "legendFormat": "{{instance}}",
           "datasource": "Prometheus"
         }
       ],
@@ -317,8 +316,8 @@
       "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "rate(container_cpu_usage_seconds_total{container_label_com_docker_compose_service=~'kafka|spark-master|airflow|minio'}[1m]) * 100",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "expr": "rate(container_cpu_usage_seconds_total{id=\"/\"}[1m]) * 100",
+          "legendFormat": "{{instance}}",
           "datasource": "Prometheus"
         }
       ],
@@ -351,7 +350,7 @@
       "gridPos": { "x": 12, "y": 32, "w": 6, "h": 4 },
       "targets": [
         {
-          "expr": "minio_cluster_disk_used_bytes / 1024 / 1024 / 1024",
+          "expr": "minio_cluster_usage_total_bytes / 1024 / 1024 / 1024",
           "legendFormat": "Used (GB)",
           "datasource": "Prometheus"
         }

@@ -51,7 +51,7 @@ groups:
       # ── Host Disk ─────────────────────────────────────────────
       - alert: HostDiskSpaceLow
         expr: |
-          (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100 > 75
+          max by(instance) ((1 - (node_filesystem_avail_bytes{mountpoint=~"/|/var/lib|/mnt/docker-desktop-disk"} / node_filesystem_size_bytes{mountpoint=~"/|/var/lib|/mnt/docker-desktop-disk"})) * 100) > 75
         for: 10m
         labels:
           severity: warning
@@ -62,7 +62,7 @@ groups:
 
       - alert: HostDiskSpaceCritical
         expr: |
-          (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100 > 90
+          max by(instance) ((1 - (node_filesystem_avail_bytes{mountpoint=~"/|/var/lib|/mnt/docker-desktop-disk"} / node_filesystem_size_bytes{mountpoint=~"/|/var/lib|/mnt/docker-desktop-disk"})) * 100) > 90
         for: 5m
         labels:
           severity: critical
@@ -83,7 +83,7 @@ groups:
           description: "Tất cả Bronze/Silver/Gold Delta tables không thể ghi/đọc."
 
       - alert: MinIODiskUsageHigh
-        expr: minio_cluster_disk_used_bytes / minio_cluster_disk_total_bytes > 0.8
+        expr: 1 - (minio_cluster_capacity_raw_free_bytes / minio_cluster_capacity_raw_total_bytes) > 0.8
         for: 10m
         labels:
           severity: warning
@@ -92,20 +92,17 @@ groups:
           summary: "⚠️ MinIO disk usage > 80%"
           description: "MinIO đang dùng {{ $value | humanizePercentage }} dung lượng."
 
-      # ── Container crash loop ──────────────────────────────────
-      # FIX: thay metrics-api → postgres trong regex
-      - alert: ContainerCrashLooping
+      # ── Core service target down ──────────────────────────────
+      - alert: CoreServiceTargetDown
         expr: |
-          increase(container_last_seen{
-            container_label_com_docker_compose_service=~"kafka|spark-master|airflow|minio|mlflow|postgres"
-          }[5m]) == 0
+          up{job=~"kafka|spark-master|airflow|minio|mlflow-health|postgres"} == 0
         for: 5m
         labels:
           severity: critical
           component: infrastructure
         annotations:
-          summary: "🔴 Container {{ $labels.container_label_com_docker_compose_service }} không còn thấy"
-          description: "Container có thể đã crash. Kiểm tra: docker ps -a"
+          summary: "🔴 Service target {{ $labels.job }} DOWN"
+          description: "Prometheus không scrape được service target. Kiểm tra docker ps -a và /targets."
 
       # ── Network I/O ───────────────────────────────────────────
       - alert: HostNetworkReceiveHigh

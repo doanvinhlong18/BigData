@@ -25,30 +25,8 @@ groups:
           summary: "🔴 Zookeeper DOWN"
           description: "Zookeeper down — Kafka sẽ không thể hoạt động."
 
-      # ── Consumer lag cao — Spark Streaming bị chậm ───────────
-      - alert: KafkaConsumerLagHigh
-        expr: kafka_consumer_group_lag{topic="nyc_taxi_events"} > 50000
-        for: 5m
-        labels:
-          severity: warning
-          component: kafka
-        annotations:
-          summary: "⚠️ Kafka consumer lag cao: {{ $value }} messages"
-          description: |
-            Consumer group {{ $labels.consumer_group }} lag {{ $value }} messages trên topic nyc_taxi_events.
-            Spark Streaming đang xử lý chậm hơn producer. Kiểm tra Spark worker resources.
-
-      - alert: KafkaConsumerLagCritical
-        expr: kafka_consumer_group_lag{topic="nyc_taxi_events"} > 200000
-        for: 3m
-        labels:
-          severity: critical
-          component: kafka
-        annotations:
-          summary: "🔴 Kafka consumer lag CRITICAL: {{ $value }} messages"
-          description: |
-            Lag > 200k messages. Spark Streaming bị stuck hoặc crash.
-            Cần restart Spark job hoặc scale thêm worker.
+      # Consumer lag cần kafka-lag-exporter, service này đang tắt trong demo mode.
+      # Theo dõi ingestion bằng KafkaNoMessagesIngested và partition offset trên Grafana.
 
       # ── Under-replicated partitions ───────────────────────────
       - alert: KafkaUnderReplicatedPartitions
@@ -63,7 +41,7 @@ groups:
 
       # ── Disk Kafka full ───────────────────────────────────────
       - alert: KafkaLogDirUsageHigh
-        expr: kafka_log_log_size{topic="nyc_taxi_events"} > 5e9
+        expr: sum(kafka_log_log_size{topic="nyc_taxi_events"}) > 5e9
         for: 10m
         labels:
           severity: warning
@@ -75,7 +53,7 @@ groups:
       # ── Producer không ghi vào Kafka ─────────────────────────
       - alert: KafkaNoMessagesIngested
         expr: |
-          rate(kafka_server_brokertopicmetrics_messagesin_total{topic="nyc_taxi_events"}[5m]) == 0
+          sum(kafka_server_brokertopicmetrics_messagesin_rate1m{topic="nyc_taxi_events"}) == 0
         for: 10m
         labels:
           severity: warning

@@ -6,8 +6,8 @@ groups:
       # metrics-api không còn tồn tại (demo mode).
       # Pipeline health được theo dõi qua:
       #   - airflow.yml   → monitoring_dag, predict-service staleness
-      #   - spark.yml     → job count, batch duration, executor failures
-      #   - kafka.yml     → consumer lag, producer ingestion
+      #   - spark.yml     → worker/app count, streaming latency, stage failures
+      #   - kafka.yml     → producer ingestion, partition offsets/log size
       #   - Grafana dashboard đọc trực tiếp từ PostgreSQL
 
       # ── predict-service không ghi prediction trong 3 phút ─────

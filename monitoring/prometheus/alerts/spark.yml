@@ -15,7 +15,7 @@ groups:
 
       # ── Không có worker nào active ────────────────────────────
       - alert: SparkNoActiveWorkers
-        expr: spark_master_workers_alive < 1
+        expr: metrics_master_aliveWorkers_Value < 1
         for: 2m
         labels:
           severity: critical
@@ -26,7 +26,7 @@ groups:
 
       # ── Worker mất kết nối ────────────────────────────────────
       - alert: SparkWorkerLost
-        expr: spark_master_workers_alive < spark_master_workers_alive offset 5m
+        expr: metrics_master_aliveWorkers_Value < metrics_master_aliveWorkers_Value offset 5m
         for: 2m
         labels:
           severity: warning
@@ -37,7 +37,7 @@ groups:
 
       # ── Không có streaming job nào chạy ──────────────────────
       - alert: SparkNoActiveStreamingJobs
-        expr: spark_master_apps_running < 3
+        expr: metrics_master_apps_Value < 3
         for: 5m
         labels:
           severity: critical
@@ -51,7 +51,7 @@ groups:
       # ── Streaming processing lag ──────────────────────────────
       - alert: SparkStreamingBatchDurationHigh
         expr: |
-          spark_streaming_last_batch_processing_duration_ms > 30000
+          {__name__=~"metrics_app_.*_driver_spark_streaming_.*_latency_Value"} > 30000
         for: 5m
         labels:
           severity: warning
@@ -63,7 +63,7 @@ groups:
       # ── Driver OOM hoặc GC overhead ──────────────────────────
       - alert: SparkDriverMemoryHigh
         expr: |
-          spark_driver_jvm_memory_heap_used / spark_driver_jvm_memory_heap_max > 0.85
+          {__name__=~"metrics_app_.*_driver_jvm_heap_usage_Value"} > 0.85
         for: 5m
         labels:
           severity: warning
@@ -72,14 +72,14 @@ groups:
           summary: "⚠️ Spark Driver heap usage > 85%"
           description: "Heap usage {{ $value | humanizePercentage }}. Nguy cơ OOM. Tăng SPARK_DAEMON_MEMORY hoặc giảm neighbor demand pandas collect."
 
-      # ── Executor bị evict ─────────────────────────────────────
-      - alert: SparkExecutorsFailing
+      # ── Stage bị fail liên tục ────────────────────────────────
+      - alert: SparkStagesFailing
         expr: |
-          increase(spark_executor_failed_total[10m]) > 3
+          {__name__=~"metrics_app_.*_driver_DAGScheduler_stage_failedStages_Value"} > 3
         for: 3m
         labels:
           severity: warning
           component: spark
         annotations:
-          summary: "⚠️ {{ $value }} Spark Executor failures trong 10 phút"
-          description: "Executor đang fail liên tục. Kiểm tra MinIO connectivity và worker disk space."
+          summary: "⚠️ {{ $value }} Spark stages đang fail"
+          description: "Spark stages bị fail liên tục. Kiểm tra MinIO connectivity, worker memory/CPU và logs driver."

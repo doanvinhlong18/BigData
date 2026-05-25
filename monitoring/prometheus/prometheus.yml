@@ -28,9 +28,8 @@ scrape_configs:
         replacement: "kafka-broker-1"
 
   # ── Kafka Consumer Lag ────────────────────────────────────
-  - job_name: "kafka-consumer-lag"
-    static_configs:
-      - targets: ["kafka-lag-exporter:8000"]
+  # Disabled in demo mode because kafka-lag-exporter service is not running.
+  # Re-enable this scrape job only if kafka-lag-exporter is restored.
 
   # ── Zookeeper (blackbox tcp) ───────────────────────────────
   - job_name: "zookeeper"
@@ -54,14 +53,8 @@ scrape_configs:
       - targets: ["spark-master:8080"]
 
   # ── Spark Worker (local — on master Docker network) ───────────
-  # Optional local worker (spark-worker-local in docker-compose.master.yml).
-  # Comment out if you disabled it.
-  - job_name: "spark-worker-local"
-    metrics_path: "/metrics/worker/prometheus/"
-    static_configs:
-      - targets: ["spark-worker-local:8082"]
-        labels:
-          machine: "master"
+  # Disabled because spark-worker-local is commented out in docker-compose.master.yml.
+  # Re-enable this scrape job only when the local worker service is enabled.
 
   # ── Spark Worker (remote machine via LAN) ─────────────────────
   # __SPARK_WORKER_HOST__ is rendered from .env by docker-compose.master.yml.
@@ -151,7 +144,7 @@ scrape_configs:
   # ── Node Exporter (master machine) ───────────────────────────
   - job_name: "node-exporter-master"
     static_configs:
-      - targets: ["localhost:9100"]
+      - targets: ["host.docker.internal:9100"]
         labels:
           machine: "master"
 
