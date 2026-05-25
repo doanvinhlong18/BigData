@@ -1,14 +1,22 @@
 #!/bin/bash
-# scripts/start-worker.sh — Chạy trên Machine 2 (WORKER_ID=A) và Machine 3 (WORKER_ID=B)
+# scripts/start-worker.sh — Chạy trên worker machine.
 
-if [ -z "$WORKER_ID" ]; then
-  echo "Usage: WORKER_ID=A bash scripts/start-worker.sh"
-  echo "       WORKER_ID=B bash scripts/start-worker.sh"
-  exit 1
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [ -f ".env" ]; then
+  set -a
+  . ./.env
+  set +a
 fi
 
-echo "=== Starting Spark Worker ${WORKER_ID} ==="
-WORKER_ID=$WORKER_ID docker-compose -f docker-compose.worker.yml up -d
+: "${SPARK_WORKER_HOST:?Set SPARK_WORKER_HOST in .env}"
+: "${MASTER_IP:?Set MASTER_IP in .env}"
+: "${WORKER_IP:?Set WORKER_IP in .env}"
 
-echo "Worker ${WORKER_ID} started."
-echo "Check on Master: http://\${MASTER_IP}:8080"
+echo "=== Starting Spark Worker ${SPARK_WORKER_HOST} (${WORKER_IP}) ==="
+docker compose -f docker-compose.worker.yml up -d
+
+echo "Worker ${SPARK_WORKER_HOST} started."
+echo "Check on Master: http://${MASTER_IP}:8080"

@@ -63,13 +63,13 @@ scrape_configs:
         labels:
           machine: "master"
 
-  # ── Spark Worker (remote machine via VPN) ─────────────────────
-  # IMPORTANT: replace 192.168.10.2 with your actual WORKER_IP.
+  # ── Spark Worker (remote machine via LAN) ─────────────────────
+  # __SPARK_WORKER_HOST__ is rendered from .env by docker-compose.master.yml.
   # After editing, reload: curl -X POST http://localhost:9090/-/reload
   - job_name: "spark-worker-remote"
     metrics_path: "/metrics/worker/prometheus/"
     static_configs:
-      - targets: ["192.168.10.2:8081"]
+      - targets: ["__SPARK_WORKER_HOST__:8081"]
         labels:
           machine: "worker-A"
 
@@ -155,18 +155,18 @@ scrape_configs:
         labels:
           machine: "master"
 
-  # ── Node Exporter (worker machine via VPN) ────────────────────
-  # Replace 192.168.10.2 with your actual WORKER_IP.
+  # ── Node Exporter (worker machine via LAN) ────────────────────
+  # __SPARK_WORKER_HOST__ is rendered from .env by docker-compose.master.yml.
   - job_name: "node-exporter-worker"
     static_configs:
-      - targets: ["192.168.10.2:9100"]
+      - targets: ["__SPARK_WORKER_HOST__:9100"]
         labels:
           machine: "worker-A"
 
-  # ── cAdvisor (worker machine via VPN) ─────────────────────────
-  # Replace 192.168.10.2 with your actual WORKER_IP.
+  # ── cAdvisor (worker machine via LAN) ─────────────────────────
+  # __SPARK_WORKER_HOST__ is rendered from .env by docker-compose.master.yml.
   - job_name: "cadvisor-worker"
     static_configs:
-      - targets: ["192.168.10.2:8090"]
+      - targets: ["__SPARK_WORKER_HOST__:8090"]
         labels:
           machine: "worker-A"

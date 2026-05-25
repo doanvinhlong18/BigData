@@ -158,8 +158,8 @@ upload_models_to_mlflow() {
   MSYS_NO_PATHCONV=1 docker run --rm -i \
     --network bigdata-net \
     -v "${model_dir_abs}:/models:ro" \
-    -e MLFLOW_TRACKING_URI="http://mlflow:5000" \
-    -e MLFLOW_S3_ENDPOINT_URL="http://minio:9000" \
+    -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI_INTERNAL:-http://mlflow:5000}" \
+    -e MLFLOW_S3_ENDPOINT_URL="${MINIO_ENDPOINT:-http://minio:9000}" \
     -e AWS_ACCESS_KEY_ID="${MINIO_ACCESS_KEY:-minioadmin}" \
     -e AWS_SECRET_ACCESS_KEY="${MINIO_SECRET_KEY:-minioadmin}" \
     -e GIT_PYTHON_REFRESH="quiet" \
@@ -320,7 +320,7 @@ check_registered_models() {
   info "Checking MLflow model registry..."
   MSYS_NO_PATHCONV=1 docker run --rm -i \
     --network bigdata-net \
-    -e MLFLOW_TRACKING_URI="http://mlflow:5000" \
+    -e MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI_INTERNAL:-http://mlflow:5000}" \
     -e PYTHONWARNINGS="ignore" \
     bigdata-predict-service:latest \
     python - <<'PY'

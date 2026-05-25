@@ -24,7 +24,7 @@
         { "expr": "up{job='minio'}", "legendFormat": "MinIO", "datasource": "Prometheus" },
         { "expr": "up{job='airflow'}", "legendFormat": "Airflow", "datasource": "Prometheus" },
         { "expr": "probe_success{instance='http://mlflow:5000/health'}", "legendFormat": "MLflow", "datasource": "Prometheus" },
-        { "expr": "probe_success{instance='http://metrics-api:8000/health'}", "legendFormat": "Metrics API", "datasource": "Prometheus" }
+        { "expr": "probe_success{instance='postgres:5432'}", "legendFormat": "PostgreSQL", "datasource": "Prometheus" }
       ],
       "fieldConfig": {
         "defaults": {

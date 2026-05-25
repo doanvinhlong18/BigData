@@ -10,14 +10,35 @@
 #    Tổng        → 6 cores, 6GB RAM ✅
 # ============================================================
 
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [ -f ".env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+fi
+
+SPARK_SUBMIT_MASTER="${SPARK_MASTER_URL:-spark://spark-master:7077}"
+DRIVER_HOST="${MASTER_IP:-spark-master}"
+KAFKA_EXECUTOR_BOOTSTRAP="${KAFKA_BOOTSTRAP_EXTERNAL:-${KAFKA_BOOTSTRAP_INTERNAL:-kafka:9092}}"
 TARGET="${1:-all}"
+
+SPARK_SUBMIT_ARGS=(
+    /opt/spark/bin/spark-submit
+    --master "${SPARK_SUBMIT_MASTER}"
+    --deploy-mode client
+    --conf "spark.driver.host=${DRIVER_HOST}"
+    --conf "spark.driver.bindAddress=0.0.0.0"
+    --conf "spark.executorEnv.KAFKA_BOOTSTRAP_SERVERS=${KAFKA_EXECUTOR_BOOTSTRAP}"
+)
 
 submit_weather() {
     echo "[SUBMIT] Submitting Weather Bronze streaming job..."
     docker exec spark-master \
-        /opt/spark/bin/spark-submit \
-        --master spark://spark-master:7077 \
-        --deploy-mode client \
+        "${SPARK_SUBMIT_ARGS[@]}" \
         --driver-memory 512m \
         --executor-memory 2g \
         --executor-cores 2 \
@@ -29,9 +50,7 @@ submit_weather() {
 submit_taxi() {
     echo "[SUBMIT] Submitting Taxi Events Bronze streaming job..."
     docker exec spark-master \
-        /opt/spark/bin/spark-submit \
-        --master spark://spark-master:7077 \
-        --deploy-mode client \
+        "${SPARK_SUBMIT_ARGS[@]}" \
         --driver-memory 1g \
         --executor-memory 4g \
         --executor-cores 4 \

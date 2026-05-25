@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Check if a MinIO/S3 object exists using AWS Signature V4 via Python stdlib."""
-import sys, hmac, hashlib, datetime, urllib.request, urllib.error
+import os, sys, hmac, hashlib, datetime, urllib.parse, urllib.request, urllib.error
 
-ENDPOINT = "http://minio:9000"
-KEY = "minioadmin"
-SECRET = "minioadmin"
+ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
+KEY = os.getenv("MINIO_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
+SECRET = os.getenv("MINIO_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
 REGION = "us-east-1"
 
 def sign(key, msg):
@@ -21,7 +21,7 @@ def s3_head(bucket, key):
     t = datetime.datetime.utcnow()
     amz_date   = t.strftime("%Y%m%dT%H%M%SZ")
     date_stamp = t.strftime("%Y%m%d")
-    host = "minio:9000"
+    host = urllib.parse.urlparse(ENDPOINT).netloc
     canonical_uri = f"/{bucket}/{key}"
     canonical_qs = ""
     canonical_headers = f"host:{host}\nx-amz-date:{amz_date}\n"

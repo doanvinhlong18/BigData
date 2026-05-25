@@ -62,8 +62,8 @@ services:
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
       # KAFKA_ADVERTISED_LISTENERS: what Kafka tells clients to connect to
       #   PLAINTEXT  → used by containers on the same Docker network (kafka:9092)
-      #   PLAINTEXT_HOST → used by external machines via VPN (MASTER_IP:29092)
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://${MASTER_IP}:29092
+      #   PLAINTEXT_HOST → used by external machines via LAN (MASTER_IP:29092)
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${KAFKA_BOOTSTRAP_INTERNAL},PLAINTEXT_HOST://${KAFKA_BOOTSTRAP_EXTERNAL}
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -104,13 +104,13 @@ services:
       - -c
       - |
         kafka-topics --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
+          --bootstrap-server ${KAFKA_BOOTSTRAP_INTERNAL} \
           --topic nyc_taxi_events \
           --partitions 3 \
           --replication-factor 1 \
           --config retention.ms=172800000 \
         && echo "✅ Topics OK" \
-        && kafka-topics --list --bootstrap-server kafka:9092
+        && kafka-topics --list --bootstrap-server ${KAFKA_BOOTSTRAP_INTERNAL}
     restart: on-failure
 
   # ── KAFKA LAG EXPORTER ─────────────────────────────────────────
@@ -165,7 +165,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: |
       "
-      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+      mc alias set local ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
       mc mb -p local/bronze
       mc mb -p local/silver
       mc mb -p local/gold
@@ -194,15 +194,19 @@ services:
       # Passed into submit-jobs.sh so the driver can advertise MASTER_IP to remote workers
       MASTER_IP: ${MASTER_IP}
       # S3A credentials for spark-submit launched from this container
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
       PYSPARK_PYTHON: /usr/bin/python3
       PYSPARK_DRIVER_PYTHON: /usr/bin/python3
       # Driver (trên spark-master container) dùng internal Kafka hostname
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      # Executor (trên spark-worker-A máy khác) cần external address qua VPN
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_INTERNAL}
+      # Executor (trên worker machine khác) cần external address qua LAN
       # Nếu chỉ 1 máy (local), để giống KAFKA_BOOTSTRAP_SERVERS
-      KAFKA_BOOTSTRAP_SERVERS_EXECUTOR: ${MASTER_IP}:29092
+      KAFKA_BOOTSTRAP_SERVERS_EXECUTOR: ${KAFKA_BOOTSTRAP_EXTERNAL}
+    extra_hosts:
+      # Driver chạy trong spark-master cần resolve hostname worker về IP LAN của máy worker.
+      - "${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}:${WORKER_IP:?set WORKER_IP in .env}"
     ports:
       - "7077:7077"   # Spark Master RPC — workers connect here
       - "8080:8080"   # Spark Master Web UI
@@ -333,10 +337,10 @@ services:
         AIRFLOW__METRICS__STATSD_PORT: 8125
         AIRFLOW__METRICS__STATSD_PREFIX: airflow
         MASTER_IP: ${MASTER_IP}
-        MINIO_ENDPOINT: ${MINIO_ENDPOINT_EXTERNAL}
+        MINIO_ENDPOINT: ${MINIO_ENDPOINT}
         MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
         MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-        MLFLOW_TRACKING_URI: http://${MASTER_IP}:5000
+        MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI_INTERNAL}
         POSTGRES_HOST: postgres
         POSTGRES_PORT: "5432"
         POSTGRES_DB: ${POSTGRES_DB}
@@ -413,7 +417,7 @@ services:
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI_INTERNAL}
       GOLD_AGG_PATH: s3://gold/aggregated
       WEATHER_PARQUET_PATH: s3://weather/parquet
       WEATHER_PARQUET_LOCAL: /datasets/parquet_by_day
@@ -440,49 +444,63 @@ services:
 
   # ── MLFLOW ─────────────────────────────────────────────────────
   mlflow:
-    image: python:3.11-slim
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
     container_name: mlflow
     restart: unless-stopped
-    mem_limit: 2g   # pip install + MLflow server can exceed 800m on Docker Desktop
+
     depends_on:
       minio:
         condition: service_healthy
       postgres:
         condition: service_healthy
+
     environment:
       <<: *minio-env
-    command: ["bash", "-c", "pip install --no-cache-dir --quiet mlflow boto3 psycopg2-binary && exec mlflow server --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow --default-artifact-root s3://mlflow-artifacts/ --host 0.0.0.0 --port 5000 --allowed-hosts '*' --cors-allowed-origins '*'"]
+
+    command: >
+      mlflow server
+      --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+      --default-artifact-root s3://mlflow-artifacts/
+      --host 0.0.0.0
+      --port 5000
+
     ports:
       - "5000:5000"
+
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:5000')"
-        ]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 60s
-
   # ── PROMETHEUS ─────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.48.0
     container_name: prometheus
     restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
     mem_limit: 1g   # TSDB 30d + WAL in-memory index ~400M; 1G buffer
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=30d"
-      - "--web.enable-lifecycle"
-      - "--web.enable-admin-api"
+      - |
+        sed s#__SPARK_WORKER_HOST__#$${SPARK_WORKER_HOST}#g /etc/prometheus/prometheus.yml.template > /tmp/prometheus.yml
+        exec /bin/prometheus \
+          --config.file=/tmp/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=30d \
+          --web.enable-lifecycle \
+          --web.enable-admin-api
+    environment:
+      SPARK_WORKER_HOST: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
     ports:
       - "9090:9090"
+    extra_hosts:
+      - "${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}:${WORKER_IP:?set WORKER_IP in .env}"
     volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml.template:ro
       - ./monitoring/prometheus/alerts:/etc/prometheus/alerts:ro
       - prometheus-data:/prometheus
     depends_on:
@@ -575,7 +593,7 @@ services:
         condition: service_healthy
     command: python -u unified_producer.py request
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_INTERNAL}
       SPEED_FACTOR: ${SPEED_FACTOR}
       DATASET_PATH: /datasets
       PYTHONUNBUFFERED: "1"
@@ -593,7 +611,7 @@ services:
         condition: service_healthy
     command: python -u unified_producer.py pickup
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_INTERNAL}
       SPEED_FACTOR: ${SPEED_FACTOR}
       DATASET_PATH: /datasets
       PYTHONUNBUFFERED: "1"
@@ -611,7 +629,7 @@ services:
         condition: service_healthy
     command: python -u unified_producer.py dropoff
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_INTERNAL}
       SPEED_FACTOR: ${SPEED_FACTOR}
       DATASET_PATH: /datasets
       PYTHONUNBUFFERED: "1"
