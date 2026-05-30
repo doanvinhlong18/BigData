@@ -184,6 +184,31 @@ def _get_last_predicted_slot() -> pd.Timestamp | None:
     return None
 
 
+def _restore_metrics_from_db():
+    """
+    Restore non-timestamp metrics after restart. The timestamp metric intentionally
+    stays at 0 until this process writes a prediction, so Grafana can show no data
+    instead of computing time() - 0 as ~56 years.
+    """
+    try:
+        with _pg_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM predictions_monitoring
+                    WHERE window_end = (
+                        SELECT MAX(window_end) FROM predictions_monitoring
+                    )
+                    """
+                )
+                zones = cur.fetchone()[0]
+        METRIC_ZONES_PREDICTED.set(float(zones or 0))
+        log.info(f"[METRICS] Restored zones_predicted_last_slot={zones or 0}")
+    except Exception as e:
+        log.warning(f"[METRICS] restore from DB failed: {e}")
+
+
 # ── Gold helpers ───────────────────────────────────────────────────────────────
 def _load_latest_gold():
     """
@@ -359,6 +384,7 @@ class ModelCache:
             f"model_b={'OK v'+str(self._ver_b) if self._model_b else 'NONE'} "
             f"shadow_a={'OK v'+str(self._shadow_a_ver) if self._shadow_a else 'NONE'}"
         )
+        METRIC_MODEL_LOADED.set(1.0 if (self._model_a or self._model_b) else 0.0)
 
     @property
     def model_a(self):
@@ -395,6 +421,7 @@ def _predict_slot(
     )
 
     rows = []
+    predicted_at = pd.Timestamp.utcnow()
     for _, row in feat_df.iterrows():
         zone_id = int(row["zone_id"])
         has_wx = all(pd.notna(row.get(f"temperature_2m_lead{i}")) for i in [1, 2, 3])
@@ -431,7 +458,7 @@ def _predict_slot(
                 "pred_confidence": float(proba[pred]),
                 "used_model": used,
                 "model_version": str(m_ver) if m_ver else None,
-                "predicted_at": slot_end,
+                "predicted_at": predicted_at,
                 "shadow_predicted_class": shadow_pred,
                 **{f"proba_{i}": float(proba[i]) for i in range(6)},
                 **{
@@ -506,6 +533,7 @@ def main():
     # Chờ các service phụ thuộc sẵn sàng
     time.sleep(10)
     _ensure_table()
+    _restore_metrics_from_db()
 
     cache = ModelCache()
     cache.refresh_if_needed()  # load ngay lúc khởi động

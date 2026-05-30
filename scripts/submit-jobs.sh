@@ -23,6 +23,32 @@ STATEFUL_CHECKPOINT_BASE_EFFECTIVE="${STATEFUL_CHECKPOINT_BASE:-${CHECKPOINT_BAS
 STATEFUL_STREAM_MASTER="${STATEFUL_STREAM_MASTER:-${SPARK_MASTER}}"
 LAUNCHER_POLL_INTERVAL_S="${LAUNCHER_POLL_INTERVAL_S:-30}"
 
+min_driver_memory() {
+  local value="${1:-512m}"
+  case "${value}" in
+    *m|*M)
+      local mb="${value%[mM]}"
+      if [[ "${mb}" =~ ^[0-9]+$ ]] && [ "${mb}" -lt 512 ]; then
+        echo "512m"
+      else
+        echo "${value}"
+      fi
+      ;;
+    "")
+      echo "512m"
+      ;;
+    *)
+      echo "${value}"
+      ;;
+  esac
+}
+
+JOB1_DRIVER_MEMORY_EFFECTIVE="$(min_driver_memory "${JOB1_DRIVER_MEMORY:-512m}")"
+JOB2_DRIVER_MEMORY_EFFECTIVE="$(min_driver_memory "${JOB2_DRIVER_MEMORY:-512m}")"
+JOB3_DRIVER_MEMORY_EFFECTIVE="$(min_driver_memory "${JOB3_DRIVER_MEMORY:-512m}")"
+JOB4_DRIVER_MEMORY_EFFECTIVE="$(min_driver_memory "${JOB4_DRIVER_MEMORY:-512m}")"
+JOB5_DRIVER_MEMORY_EFFECTIVE="$(min_driver_memory "${JOB5_DRIVER_MEMORY:-512m}")"
+
 # ── Common spark-submit flags ─────────────────────────────────────────────────
 COMMON_BASE="spark-submit \
   --deploy-mode client \
@@ -67,7 +93,7 @@ RES_JOB1="--conf spark.driver.port=4100 \
   --executor-cores ${JOB1_EXECUTOR_CORES:-2} \
   --total-executor-cores ${JOB1_TOTAL_CORES:-2} \
   --executor-memory ${JOB1_EXECUTOR_MEMORY:-1280m} \
-  --driver-memory ${JOB1_DRIVER_MEMORY:-256m} \
+  --driver-memory ${JOB1_DRIVER_MEMORY_EFFECTIVE} \
   --conf spark.executor.memoryOverhead=${JOB1_MEMORY_OVERHEAD:-256m} \
   --conf spark.memory.storageFraction=0.3 \
   --conf spark.sql.shuffle.partitions=${JOB1_SHUFFLE_PARTITIONS:-4}"
@@ -76,7 +102,7 @@ RES_JOB2="--conf spark.driver.port=4101 \
   --executor-cores ${JOB2_EXECUTOR_CORES:-1} \
   --total-executor-cores ${JOB2_TOTAL_CORES:-1} \
   --executor-memory ${JOB2_EXECUTOR_MEMORY:-640m} \
-  --driver-memory ${JOB2_DRIVER_MEMORY:-256m} \
+  --driver-memory ${JOB2_DRIVER_MEMORY_EFFECTIVE} \
   --conf spark.executor.memoryOverhead=${JOB2_MEMORY_OVERHEAD:-256m} \
   --conf spark.memory.storageFraction=0.3 \
   --conf spark.sql.shuffle.partitions=${JOB2_SHUFFLE_PARTITIONS:-4}"
@@ -85,7 +111,7 @@ RES_JOB3="--conf spark.driver.port=4102 \
   --executor-cores ${JOB3_EXECUTOR_CORES:-1} \
   --total-executor-cores ${JOB3_TOTAL_CORES:-1} \
   --executor-memory ${JOB3_EXECUTOR_MEMORY:-1024m} \
-  --driver-memory ${JOB3_DRIVER_MEMORY:-256m} \
+  --driver-memory ${JOB3_DRIVER_MEMORY_EFFECTIVE} \
   --conf spark.executor.memoryOverhead=${JOB3_MEMORY_OVERHEAD:-256m} \
   --conf spark.memory.storageFraction=0.3 \
   --conf spark.sql.shuffle.partitions=${JOB3_SHUFFLE_PARTITIONS:-4}"
@@ -94,7 +120,7 @@ RES_JOB4="--conf spark.driver.port=4103 \
   --executor-cores ${JOB4_EXECUTOR_CORES:-2} \
   --total-executor-cores ${JOB4_TOTAL_CORES:-2} \
   --executor-memory ${JOB4_EXECUTOR_MEMORY:-2816m} \
-  --driver-memory ${JOB4_DRIVER_MEMORY:-256m} \
+  --driver-memory ${JOB4_DRIVER_MEMORY_EFFECTIVE} \
   --conf spark.executor.memoryOverhead=${JOB4_MEMORY_OVERHEAD:-256m} \
   --conf spark.memory.storageFraction=0.3 \
   --conf spark.sql.shuffle.partitions=${JOB4_SHUFFLE_PARTITIONS:-4}"
@@ -105,7 +131,7 @@ RES_JOB5="--conf spark.driver.port=4104 \
   --executor-cores ${JOB5_EXECUTOR_CORES:-2} \
   --total-executor-cores ${JOB5_TOTAL_CORES:-2} \
   --executor-memory ${JOB5_EXECUTOR_MEMORY:-3584m} \
-  --driver-memory ${JOB5_DRIVER_MEMORY:-512m} \
+  --driver-memory ${JOB5_DRIVER_MEMORY_EFFECTIVE} \
   --conf spark.executor.memoryOverhead=${JOB5_MEMORY_OVERHEAD:-384m} \
   --conf spark.memory.storageFraction=${JOB5_STORAGE_FRACTION:-0.5} \
   --conf spark.sql.shuffle.partitions=${JOB5_SHUFFLE_PARTITIONS:-4}"

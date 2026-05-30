@@ -107,9 +107,10 @@ WINDOW_LOOKBACK_MINUTES = int(os.getenv("GOLD_WINDOW_LOOKBACK_MINUTES", "30"))
 WATERMARK = "5 minutes"
 TRIGGER_INTERVAL = f"{int(os.getenv('GOLD_TRIGGER_INTERVAL_S', os.getenv('SPARK_TRIGGER_INTERVAL_S', '60')))} seconds"
 SOURCE_WAIT_POLL_S = int(os.getenv("SOURCE_WAIT_POLL_S", "15"))
+SOURCE_WAIT_TIMEOUT_S = int(os.getenv("SOURCE_WAIT_TIMEOUT_S", "1800"))
 
 
-def wait_for_source(spark, path, timeout=600):
+def wait_for_source(spark, path, timeout=SOURCE_WAIT_TIMEOUT_S):
     """Chờ Delta table tồn tại trước khi readStream."""
     print(f"[wait_for_source] Chờ {path} ...", flush=True)
     elapsed = 0

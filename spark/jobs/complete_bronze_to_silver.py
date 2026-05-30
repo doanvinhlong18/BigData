@@ -51,9 +51,11 @@ RESPONSE_WATERMARK = (
 DROPOFF_WATERMARK = "5 minutes"
 TRIGGER_INTERVAL = f"{int(os.getenv('SPARK_TRIGGER_INTERVAL_S', '30'))} seconds"
 SOURCE_WAIT_POLL_S = int(os.getenv("SOURCE_WAIT_POLL_S", "15"))
+SOURCE_WAIT_TIMEOUT_S = int(os.getenv("SOURCE_WAIT_TIMEOUT_S", "1800"))
+JOB4_RANGE_MINUTES = max(1, int(float(os.getenv("JOB4_RANGE_HOURS", "1")) * 60))
 
 
-def wait_for_source(spark, path, timeout=600):
+def wait_for_source(spark, path, timeout=SOURCE_WAIT_TIMEOUT_S):
     """Chờ Delta table tồn tại trước khi readStream."""
     print(f"[wait_for_source] Chờ {path} ...", flush=True)
     elapsed = 0
@@ -170,9 +172,7 @@ def main():
             dropoff_stream.dropoff_datetime >= response_stream.pickup_datetime,
             dropoff_stream.dropoff_datetime
             <= response_stream.pickup_datetime
-            + expr(
-                f"INTERVAL {int(os.getenv('JOB4_RANGE_HOURS', '1'))} HOURS"
-            ),  # đa số chuyến < 1h
+            + expr(f"INTERVAL {JOB4_RANGE_MINUTES} MINUTES"),  # đa số chuyến < 1h
         ],
         how="inner",
     ).select(

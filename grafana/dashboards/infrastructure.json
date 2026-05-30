@@ -1,6 +1,6 @@
 {
   "title": "NYC Taxi — Infrastructure & Pipeline Monitoring",
-  "uid": "nyc-infra-v3",
+  "uid": "nyc-infra-monitoring",
   "version": 3,
   "schemaVersion": 38,
   "refresh": "15s",
@@ -21,7 +21,7 @@
   "links": [
     {
       "title": "Demand Forecast Map",
-      "url": "/d/nyc-demand-map-v3",
+      "url": "/d/nyc-demand-v2",
       "type": "link",
       "targetBlank": false,
       "icon": "external link"
@@ -671,7 +671,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "(time() - predict_service_last_prediction_timestamp) / 60",
+          "expr": "((time() - predict_service_last_prediction_timestamp) / 60) unless predict_service_last_prediction_timestamp == 0",
           "legendFormat": "min ago",
           "refId": "A"
         }
@@ -1010,7 +1010,7 @@
           },
           "expr": "kafka_server_brokertopicmetrics_bytesout_rate1m{topic=\"nyc_taxi_events\"}",
           "legendFormat": "Bytes Out",
-          "refId": "A"
+          "refId": "B"
         }
       ],
       "options": {
@@ -1227,7 +1227,7 @@
           },
           "expr": "kafka_jvm_heap_max_bytes / 1024 / 1024",
           "legendFormat": "Heap Max (MB)",
-          "refId": "A"
+          "refId": "B"
         }
       ],
       "options": {
@@ -1458,7 +1458,7 @@
           },
           "expr": "metrics_master_apps_Value",
           "legendFormat": "Running Apps",
-          "refId": "A"
+          "refId": "B"
         }
       ],
       "options": {
@@ -2022,7 +2022,7 @@
           },
           "expr": "rate(node_network_transmit_bytes_total{device=\"eth0\",machine=\"master\"}[2m])",
           "legendFormat": "TX",
-          "refId": "A"
+          "refId": "B"
         }
       ],
       "options": {
@@ -2083,7 +2083,7 @@
           },
           "expr": "rate(node_disk_written_bytes_total[2m])",
           "legendFormat": "Write {{device}}",
-          "refId": "A"
+          "refId": "B"
         }
       ],
       "options": {
@@ -2157,7 +2157,7 @@
           },
           "expr": "increase(airflow_task_failed_total[24h])",
           "legendFormat": "failed {{dag_id}}",
-          "refId": "A"
+          "refId": "B"
         }
       ],
       "options": {
@@ -2355,7 +2355,7 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "(time() - predict_service_last_prediction_timestamp) / 60",
+          "expr": "((time() - predict_service_last_prediction_timestamp) / 60) unless predict_service_last_prediction_timestamp == 0",
           "legendFormat": "minutes since last prediction",
           "refId": "A"
         }

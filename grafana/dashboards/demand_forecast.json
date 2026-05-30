@@ -1,5 +1,5 @@
 {
-  "title": "NYC Taxi Demand Forecast — Zone Heatmap",
+  "title": "NYC Taxi Demand Forecast \u2014 Zone Heatmap",
   "uid": "nyc-demand-map-v3",
   "version": 1,
   "schemaVersion": 38,
@@ -27,8 +27,8 @@
   "panels": [
     {
       "id": 1,
-      "title": "🗺️ NYC Demand Forecast — Zone Heatmap (Latest Window)",
-      "description": "Màu theo predicted_class: 0=trắng xanh (không có demand) → 5=đỏ đậm (demand rất cao). Dữ liệu tự động cập nhật mỗi 30s khi predict_service ghi batch mới vào PostgreSQL.",
+      "title": "\ud83d\uddfa\ufe0f NYC Demand Forecast \u2014 Zone Heatmap (Latest Window)",
+      "description": "M\u00e0u theo predicted_class: 0=tr\u1eafng xanh (kh\u00f4ng c\u00f3 demand) \u2192 5=\u0111\u1ecf \u0111\u1eadm (demand r\u1ea5t cao). D\u1eef li\u1ec7u t\u1ef1 \u0111\u1ed9ng c\u1eadp nh\u1eadt m\u1ed7i 30s khi predict_service ghi batch m\u1edbi v\u00e0o PostgreSQL.",
       "type": "geomap",
       "gridPos": {
         "x": 0,
@@ -62,28 +62,28 @@
             "mode": "absolute",
             "steps": [
               {
-                "value": null,
-                "color": "#EAF3FF"
+                "color": "#EAF3FF",
+                "value": null
               },
               {
-                "value": 1,
-                "color": "#B3D4FF"
+                "color": "#B3D4FF",
+                "value": 1
               },
               {
-                "value": 2,
-                "color": "#5C9EE0"
+                "color": "#5C9EE0",
+                "value": 2
               },
               {
-                "value": 3,
-                "color": "#F5A623"
+                "color": "#F5A623",
+                "value": 3
               },
               {
-                "value": 4,
-                "color": "#E85D04"
+                "color": "#E85D04",
+                "value": 4
               },
               {
-                "value": 5,
-                "color": "#9D0208"
+                "color": "#9D0208",
+                "value": 5
               }
             ]
           },
@@ -105,7 +105,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Demand Level (0–5)"
+                "value": "Demand Level (0\u20135)"
               },
               {
                 "id": "color",
@@ -119,28 +119,28 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "value": null,
-                      "color": "#EAF3FF"
+                      "color": "#EAF3FF",
+                      "value": null
                     },
                     {
-                      "value": 1,
-                      "color": "#B3D4FF"
+                      "color": "#B3D4FF",
+                      "value": 1
                     },
                     {
-                      "value": 2,
-                      "color": "#5C9EE0"
+                      "color": "#5C9EE0",
+                      "value": 2
                     },
                     {
-                      "value": 3,
-                      "color": "#F5A623"
+                      "color": "#F5A623",
+                      "value": 3
                     },
                     {
-                      "value": 4,
-                      "color": "#E85D04"
+                      "color": "#E85D04",
+                      "value": 4
                     },
                     {
-                      "value": 5,
-                      "color": "#9D0208"
+                      "color": "#9D0208",
+                      "value": 5
                     }
                   ]
                 }
@@ -156,65 +156,6 @@
               {
                 "id": "decimals",
                 "value": 0
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "0 – None",
-                        "color": "#EAF3FF"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "1 – Very Low",
-                        "color": "#B3D4FF"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "2": {
-                        "text": "2 – Low",
-                        "color": "#5C9EE0"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "3": {
-                        "text": "3 – Medium",
-                        "color": "#F5A623"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "4": {
-                        "text": "4 – High",
-                        "color": "#E85D04"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "5": {
-                        "text": "5 – Critical",
-                        "color": "#9D0208"
-                      }
-                    }
-                  }
-                ]
               }
             ]
           },
@@ -336,16 +277,16 @@
           },
           {
             "type": "geojson",
-            "name": "NYC TLC Zones — Demand",
+            "name": "NYC TLC Zones \u2014 Demand",
             "config": {
               "src": "public/maps/nyc_taxi_zones.geojson",
               "rules": [],
               "style": {
                 "color": {
-                  "field": "predicted_class",
-                  "mode": "thresholds"
+                  "fixed": "#EAF3FF",
+                  "mode": "fixed"
                 },
-                "opacity": 0.75,
+                "opacity": 0.85,
                 "rotation": {
                   "fixed": 0,
                   "max": 360,
@@ -368,6 +309,48 @@
                   "offsetY": 0,
                   "textAlign": "center",
                   "textBaseline": "middle"
+                },
+                "strokeColor": {
+                  "fixed": "#555555",
+                  "mode": "fixed"
+                },
+                "strokeWidth": {
+                  "fixed": 1,
+                  "mode": "fixed"
+                },
+                "fillColor": {
+                  "field": "predicted_class",
+                  "fixed": "#EAF3FF",
+                  "mode": "thresholds",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "#EAF3FF",
+                        "value": null
+                      },
+                      {
+                        "color": "#B3D4FF",
+                        "value": 1
+                      },
+                      {
+                        "color": "#5C9EE0",
+                        "value": 2
+                      },
+                      {
+                        "color": "#F5A623",
+                        "value": 3
+                      },
+                      {
+                        "color": "#E85D04",
+                        "value": 4
+                      },
+                      {
+                        "color": "#9D0208",
+                        "value": 5
+                      }
+                    ]
+                  }
                 }
               },
               "featureMappingField": "LocationID",
@@ -390,7 +373,7 @@
     },
     {
       "id": 20,
-      "title": "📊 Stats",
+      "title": "\ud83d\udcca Stats",
       "type": "row",
       "gridPos": {
         "x": 0,
@@ -403,7 +386,7 @@
     },
     {
       "id": 2,
-      "title": "⏰ Latest Window",
+      "title": "\u23f0 Latest Window",
       "type": "stat",
       "gridPos": {
         "x": 0,
@@ -452,7 +435,7 @@
     },
     {
       "id": 3,
-      "title": "🗾 Zones Predicted",
+      "title": "\ud83d\uddfe Zones Predicted",
       "type": "stat",
       "gridPos": {
         "x": 5,
@@ -508,7 +491,7 @@
     },
     {
       "id": 4,
-      "title": "🎯 Avg Confidence (Latest)",
+      "title": "\ud83c\udfaf Avg Confidence (Latest)",
       "type": "gauge",
       "gridPos": {
         "x": 9,
@@ -570,7 +553,7 @@
     },
     {
       "id": 5,
-      "title": "🤖 Model A / B Split",
+      "title": "\ud83e\udd16 Model A / B Split",
       "type": "piechart",
       "gridPos": {
         "x": 14,
@@ -612,7 +595,7 @@
     },
     {
       "id": 6,
-      "title": "📊 Demand Distribution (Latest Window)",
+      "title": "\ud83d\udcca Demand Distribution (Latest Window)",
       "type": "bargauge",
       "gridPos": {
         "x": 19,
@@ -687,7 +670,7 @@
     },
     {
       "id": 21,
-      "title": "📈 Trends",
+      "title": "\ud83d\udcc8 Trends",
       "type": "row",
       "gridPos": {
         "x": 0,
@@ -700,7 +683,7 @@
     },
     {
       "id": 7,
-      "title": "📈 Demand Level Trend — Zone Count by Level",
+      "title": "\ud83d\udcc8 Demand Level Trend \u2014 Zone Count by Level",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -721,7 +704,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n    window_end AS \"time\",\n    SUM(CASE WHEN predicted_class = 0 THEN 1 ELSE 0 END) AS \"0 – None\",\n    SUM(CASE WHEN predicted_class = 1 THEN 1 ELSE 0 END) AS \"1 – Very Low\",\n    SUM(CASE WHEN predicted_class = 2 THEN 1 ELSE 0 END) AS \"2 – Low\",\n    SUM(CASE WHEN predicted_class = 3 THEN 1 ELSE 0 END) AS \"3 – Medium\",\n    SUM(CASE WHEN predicted_class = 4 THEN 1 ELSE 0 END) AS \"4 – High\",\n    SUM(CASE WHEN predicted_class = 5 THEN 1 ELSE 0 END) AS \"5 – Critical\"\nFROM predictions_monitoring\nWHERE $__timeFilter(window_end)\nGROUP BY window_end\nORDER BY window_end",
+          "rawSql": "SELECT\n    window_end AS \"time\",\n    SUM(CASE WHEN predicted_class = 0 THEN 1 ELSE 0 END) AS \"0 \u2013 None\",\n    SUM(CASE WHEN predicted_class = 1 THEN 1 ELSE 0 END) AS \"1 \u2013 Very Low\",\n    SUM(CASE WHEN predicted_class = 2 THEN 1 ELSE 0 END) AS \"2 \u2013 Low\",\n    SUM(CASE WHEN predicted_class = 3 THEN 1 ELSE 0 END) AS \"3 \u2013 Medium\",\n    SUM(CASE WHEN predicted_class = 4 THEN 1 ELSE 0 END) AS \"4 \u2013 High\",\n    SUM(CASE WHEN predicted_class = 5 THEN 1 ELSE 0 END) AS \"5 \u2013 Critical\"\nFROM predictions_monitoring\nWHERE $__timeFilter(window_end)\nGROUP BY window_end\nORDER BY window_end",
           "refId": "A"
         }
       ],
@@ -751,7 +734,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "0 – None"
+              "options": "0 \u2013 None"
             },
             "properties": [
               {
@@ -766,7 +749,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "1 – Very Low"
+              "options": "1 \u2013 Very Low"
             },
             "properties": [
               {
@@ -781,7 +764,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "2 – Low"
+              "options": "2 \u2013 Low"
             },
             "properties": [
               {
@@ -796,7 +779,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "3 – Medium"
+              "options": "3 \u2013 Medium"
             },
             "properties": [
               {
@@ -811,7 +794,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "4 – High"
+              "options": "4 \u2013 High"
             },
             "properties": [
               {
@@ -826,7 +809,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "5 – Critical"
+              "options": "5 \u2013 Critical"
             },
             "properties": [
               {
@@ -843,7 +826,7 @@
     },
     {
       "id": 8,
-      "title": "🔥 Top 15 Hottest Zones (Latest)",
+      "title": "\ud83d\udd25 Top 15 Hottest Zones (Latest)",
       "type": "table",
       "gridPos": {
         "x": 16,
@@ -957,7 +940,7 @@
     },
     {
       "id": 22,
-      "title": "🌡️ Per-Zone 24h Summary",
+      "title": "\ud83c\udf21\ufe0f Per-Zone 24h Summary",
       "type": "row",
       "gridPos": {
         "x": 0,
@@ -970,8 +953,8 @@
     },
     {
       "id": 9,
-      "title": "🌡️ All 263 Zones — Avg Demand (24h)",
-      "description": "Màu ô = avg demand 24h qua. Sắp xếp theo avg demand giảm dần.",
+      "title": "\ud83c\udf21\ufe0f All 263 Zones \u2014 Avg Demand (24h)",
+      "description": "M\u00e0u \u00f4 = avg demand 24h qua. S\u1eafp x\u1ebfp theo avg demand gi\u1ea3m d\u1ea7n.",
       "type": "table",
       "gridPos": {
         "x": 0,
