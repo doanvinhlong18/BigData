@@ -106,7 +106,7 @@ services:
     volumes:
       - ./spark/jobs:/opt/spark/app/spark/jobs
       - ./scripts:/opt/spark/app/scripts
-      - ./monitoring/spark-metrics/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+      - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
       - ${DATASET_PATH}:/datasets:ro
       - spark-checkpoints:/opt/spark/checkpoints
     healthcheck:
