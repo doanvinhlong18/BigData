@@ -338,7 +338,7 @@
             "type": "geojson",
             "name": "NYC TLC Zones — Demand",
             "config": {
-              "src": "https://data.cityofnewyork.us/api/geospatial/d3c5-ddgc?method=export&type=GeoJSON",
+              "src": "public/maps/nyc_taxi_zones.geojson",
               "rules": [],
               "style": {
                 "color": {

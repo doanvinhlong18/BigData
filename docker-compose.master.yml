@@ -145,84 +145,84 @@ services:
       retries: 5
       start_period: 20s
 
-  # ── AIRFLOW ────────────────────────────────────────────────────
-  airflow:
-    mem_limit: 2g
-    cpus: 1.5
-    build:
-      context: ./airflow
-      dockerfile: Dockerfile
-    image: bigdata-airflow:latest
-    container_name: airflow
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
-      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
-      AIRFLOW__METRICS__STATSD_ON: "true"
-      AIRFLOW__METRICS__STATSD_HOST: airflow-statsd-exporter
-      AIRFLOW__METRICS__STATSD_PORT: 8125
-      AIRFLOW__METRICS__STATSD_PREFIX: airflow
-      MASTER_IP: ${MASTER_IP}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT_EXTERNAL}
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI_INTERNAL}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      WEATHER_PARQUET_LOCAL: /opt/airflow/datasets/parquet_by_day
-      WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
-      SPARK_MASTER_URL: ${SPARK_MASTER_URL}
-      SILVER_RESPONSE: s3a://silver/response
-      SILVER_COMPLETE: s3a://silver/complete
-      GOLD_AGGREGATED: s3a://gold/aggregated
-      <<: *minio-env
-    extra_hosts:
-      - "minio:${WORKER_IP}"
-      - "kafka:${WORKER_IP}"
-    ports:
-      - "8888:8080"
-    volumes:
-      - airflow-data:/opt/airflow
-      - ./airflow/dags:/opt/airflow/dags
-      - ./ml:/opt/airflow/ml
-      - ./datasets/parquet_by_day:/opt/airflow/datasets/parquet_by_day:ro
-    command: >
-      bash -c "
-        airflow db migrate &&
-        airflow users create --username admin --password admin
-          --firstname Admin --lastname Admin
-          --role Admin --email admin@bigdata.com 2>/dev/null || true &&
-        airflow webserver &
-        airflow scheduler
-      "
-    healthcheck:
-      test: curl -f http://localhost:8080/health
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+  # # ── AIRFLOW ────────────────────────────────────────────────────
+  # airflow:
+  #   mem_limit: 2g
+  #   cpus: 1.5
+  #   build:
+  #     context: ./airflow
+  #     dockerfile: Dockerfile
+  #   image: bigdata-airflow:latest
+  #   container_name: airflow
+  #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  #     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+  #     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+  #     AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+  #     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+  #     AIRFLOW__METRICS__STATSD_ON: "true"
+  #     AIRFLOW__METRICS__STATSD_HOST: airflow-statsd-exporter
+  #     AIRFLOW__METRICS__STATSD_PORT: 8125
+  #     AIRFLOW__METRICS__STATSD_PREFIX: airflow
+  #     MASTER_IP: ${MASTER_IP}
+  #     MINIO_ENDPOINT: ${MINIO_ENDPOINT_EXTERNAL}
+  #     MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+  #     MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+  #     MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI_INTERNAL}
+  #     POSTGRES_HOST: postgres
+  #     POSTGRES_PORT: "5432"
+  #     POSTGRES_DB: ${POSTGRES_DB}
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #     WEATHER_PARQUET_LOCAL: /opt/airflow/datasets/parquet_by_day
+  #     WEATHER_CSV_PATH: ${WEATHER_CSV_PATH}
+  #     SPARK_MASTER_URL: ${SPARK_MASTER_URL}
+  #     SILVER_RESPONSE: s3a://silver/response
+  #     SILVER_COMPLETE: s3a://silver/complete
+  #     GOLD_AGGREGATED: s3a://gold/aggregated
+  #     <<: *minio-env
+  #   extra_hosts:
+  #     - "minio:${WORKER_IP}"
+  #     - "kafka:${WORKER_IP}"
+  #   ports:
+  #     - "8888:8080"
+  #   volumes:
+  #     - airflow-data:/opt/airflow
+  #     - ./airflow/dags:/opt/airflow/dags
+  #     - ./ml:/opt/airflow/ml
+  #     - ./datasets/parquet_by_day:/opt/airflow/datasets/parquet_by_day:ro
+  #   command: >
+  #     bash -c "
+  #       airflow db migrate &&
+  #       airflow users create --username admin --password admin
+  #         --firstname Admin --lastname Admin
+  #         --role Admin --email admin@bigdata.com 2>/dev/null || true &&
+  #       airflow webserver &
+  #       airflow scheduler
+  #     "
+  #   healthcheck:
+  #     test: curl -f http://localhost:8080/health
+  #     interval: 60s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 60s
 
-  airflow-statsd-exporter:
-    image: prom/statsd-exporter:v0.26.0
-    container_name: airflow-statsd-exporter
-    restart: unless-stopped
-    command:
-      - "--statsd.listen-udp=:8125"
-      - "--web.listen-address=:9102"
-      - "--statsd.mapping-config=/etc/statsd/statsd_mapping.yml"
-    ports:
-      - "9102:9102"
-    volumes:
-      - ./monitoring/airflow-statsd/statsd_mapping.yml:/etc/statsd/statsd_mapping.yml:ro
+  # airflow-statsd-exporter:
+  #   image: prom/statsd-exporter:v0.26.0
+  #   container_name: airflow-statsd-exporter
+  #   restart: unless-stopped
+  #   command:
+  #     - "--statsd.listen-udp=:8125"
+  #     - "--web.listen-address=:9102"
+  #     - "--statsd.mapping-config=/etc/statsd/statsd_mapping.yml"
+  #   ports:
+  #     - "9102:9102"
+  #   volumes:
+  #     - ./monitoring/airflow-statsd/statsd_mapping.yml:/etc/statsd/statsd_mapping.yml:ro
 
   # ── PREDICT SERVICE ────────────────────────────────────────────
   predict-service:
@@ -355,8 +355,9 @@ services:
       - "3000:3000"
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./grafana/datasources/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
-      - ./monitoring/grafana/datasources/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./grafana/dashboards/nyc_taxi_zones.geojson:/usr/share/grafana/public/maps/nyc_taxi_zones.geojson:ro
 
   # ── PRODUCERS — chạy trên Master, đẩy data sang Kafka ở Worker ─
   request-producer:

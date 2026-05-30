@@ -1,0 +1,30 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: Prometheus
+    url: http://prometheus:9090
+    access: proxy
+    isDefault: false
+    jsonData:
+      timeInterval: "15s"
+
+  - name: PostgreSQL
+    type: postgres
+    uid: PostgreSQL
+    url: postgres:5432
+    access: proxy
+    isDefault: true
+    user: admin
+    # Grafana 10.x: secureJsonData.password phải là literal string
+    # KHÔNG dùng ${VAR} trong secureJsonData — Grafana không resolve
+    secureJsonData:
+      password: "admin123"
+    jsonData:
+      database: bigdata
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+      postgresVersion: 1600
+      timescaledb: false

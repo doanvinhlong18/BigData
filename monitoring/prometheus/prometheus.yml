@@ -4,14 +4,6 @@ global:
   external_labels:
     cluster: "nyc-taxi-bigdata"
 
-rule_files:
-  - "/etc/prometheus/alerts/*.yml"
-
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets: []
-
 scrape_configs:
   - job_name: "prometheus"
     static_configs:

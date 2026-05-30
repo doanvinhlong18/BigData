@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$bashScript = Join-Path $scriptDir "start_pipeline_with_mlflow_upload.sh"
+$bashScript = Join-Path $scriptDir "start_pipeline.sh"  # thay vì _with_mlflow_upload.sh
 
 if (-not (Test-Path -LiteralPath $bashScript)) {
     throw "Cannot find $bashScript"
