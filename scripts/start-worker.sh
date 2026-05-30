@@ -5,10 +5,23 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+load_env() {
+  local raw line key value
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    line="${raw%$'\r'}"
+    [ -z "$line" ] && continue
+    case "$line" in \#*) continue ;; esac
+    [[ "$line" == *"="* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="$(printf '%s' "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    export "$key=$value"
+  done < ".env"
+}
+
 if [ -f ".env" ]; then
-  set -a
-  . ./.env
-  set +a
+  load_env
 fi
 
 : "${SPARK_WORKER_HOST:?Set SPARK_WORKER_HOST in .env}"

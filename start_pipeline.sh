@@ -15,7 +15,7 @@
 # THỨ TỰ THỰC HIỆN (script tự hướng dẫn):
 #   [Script]  STEP 1 — Kiểm tra prerequisites
 #   [Script]  STEP 2 — docker compose up --build
-#   [Script]  STEP 3 — Chờ tất cả services healthy (MLflow, Kafka, Spark...)
+#   [Script]  STEP 3 — Chờ master services healthy và worker endpoints sẵn sàng
 #   [Bạn]    STEP 4 — Chạy upload_model_to_mlflow.py trên máy Windows
 #                     (script dừng lại, in hướng dẫn, chờ xác nhận)
 #   [Script]  STEP 5 — Submit 5 Spark streaming jobs
@@ -42,12 +42,32 @@ if [ ! -f ".env" ]; then
     error ".env không tồn tại. Copy .env.example → .env và điền thông tin."
     exit 1
 fi
-export $(grep -v '^#' .env | grep -v '^$' | xargs)
+
+load_env() {
+    local raw line key value
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        line="${raw%$'\r'}"
+        [ -z "$line" ] && continue
+        case "$line" in \#*) continue ;; esac
+        [[ "$line" == *"="* ]] || continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        key="$(printf '%s' "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        export "$key=$value"
+    done < ".env"
+}
+
+load_env
+
+: "${MASTER_IP:?MASTER_IP chưa được cấu hình trong .env}"
+: "${WORKER_IP:?WORKER_IP chưa được cấu hình trong .env}"
+: "${DATASET_PATH:?DATASET_PATH chưa được cấu hình trong .env}"
 
 MLFLOW_URL="http://${MASTER_IP}:5000"
-AIRFLOW_URL="http://${MASTER_IP}:8888"
 SPARK_URL="http://${MASTER_IP}:8080"
-MINIO_URL="http://${MASTER_IP}:9001"
+MINIO_API_URL="${MINIO_ENDPOINT_EXTERNAL:-http://${WORKER_IP}:9000}"
+MINIO_URL="http://${WORKER_IP}:9001"
 GRAFANA_URL="http://${MASTER_IP}:3000"
 
 # =============================================================================
@@ -79,7 +99,7 @@ docker compose -f "$COMPOSE_FILE" up --build -d 2>&1 | tee "$LOG_DIR/compose_up.
 # =============================================================================
 # STEP 3 — Chờ services healthy
 # =============================================================================
-step "STEP 3/5 — Chờ services healthy"
+step "STEP 3/5 — Chờ master services và worker endpoints"
 
 wait_healthy() {
     local container="$1"
@@ -105,13 +125,69 @@ wait_healthy() {
     return 1
 }
 
-wait_healthy "zookeeper"    60
-wait_healthy "kafka"        120
-wait_healthy "minio"        60
+tcp_probe() {
+    local host="$1"
+    local port="$2"
+    python - "$host" "$port" <<'PY'
+import socket
+import sys
+
+host, port = sys.argv[1], int(sys.argv[2])
+try:
+    with socket.create_connection((host, port), timeout=3):
+        pass
+except OSError:
+    sys.exit(1)
+PY
+}
+
+wait_tcp() {
+    local label="$1"
+    local host="$2"
+    local port="$3"
+    local timeout="${4:-120}"
+    local elapsed=0
+    printf "  Waiting %-25s" "$label..."
+    while [ $elapsed -lt $timeout ]; do
+        if tcp_probe "$host" "$port"; then
+            echo -e " ${GREEN}${host}:${port} OK${NC}"
+            return 0
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+        printf "."
+    done
+    echo -e " ${RED}TIMEOUT ${host}:${port}${NC}"
+    return 1
+}
+
+wait_http() {
+    local label="$1"
+    local url="$2"
+    local timeout="${3:-120}"
+    local elapsed=0
+    printf "  Waiting %-25s" "$label..."
+    while [ $elapsed -lt $timeout ]; do
+        if curl -fsS --connect-timeout 3 --max-time 5 "$url" >/dev/null 2>&1; then
+            echo -e " ${GREEN}OK${NC}"
+            return 0
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+        printf "."
+    done
+    echo -e " ${RED}TIMEOUT ${url}${NC}"
+    return 1
+}
+
+# Các service này chạy trên worker, không phải container trong compose master.
+wait_tcp  "zookeeper(worker)" "$WORKER_IP" 2181 60
+wait_tcp  "kafka(worker)"     "$WORKER_IP" 29092 120
+wait_http "minio(worker)"     "${MINIO_API_URL}/minio/health/live" 60
+
 wait_healthy "postgres"     60
 wait_healthy "spark-master" 60
 wait_healthy "mlflow"       180
-wait_healthy "airflow"      180
 
 # predict-service: chỉ check đang chạy, model chưa có nên sẽ log fallback — bình thường
 sleep 5
@@ -216,7 +292,6 @@ echo -e "${GREEN}${BOLD} Pipeline đang chạy!${NC}"
 echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  ${BOLD}Spark UI${NC}       → ${SPARK_URL}"
-echo -e "  ${BOLD}Airflow${NC}        → ${AIRFLOW_URL}   (admin / admin)"
 echo -e "  ${BOLD}MLflow${NC}         → ${MLFLOW_URL}"
 echo -e "  ${BOLD}MinIO${NC}          → ${MINIO_URL}   (minioadmin / minioadmin)"
 echo -e "  ${BOLD}Grafana${NC}        → ${GRAFANA_URL}   (admin / admin)"
