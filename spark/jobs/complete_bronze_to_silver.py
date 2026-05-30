@@ -46,7 +46,7 @@ CHECKPOINT = f"{CHECKPOINT_ROOT}/silver/complete"
 
 # ── WATERMARK CONFIG ─────────────────────────────────────────
 RESPONSE_WATERMARK = (
-    f"{int(os.getenv('JOB4_RESPONSE_WATERMARK_MINUTES', '10'))} minutes"
+    f"{int(os.getenv('JOB4_RESPONSE_WATERMARK_MINUTES', '30'))} minutes"
 )
 DROPOFF_WATERMARK = "5 minutes"
 TRIGGER_INTERVAL = f"{int(os.getenv('SPARK_TRIGGER_INTERVAL_S', '30'))} seconds"
@@ -60,10 +60,10 @@ def wait_for_source(spark, path, timeout=600):
     while elapsed < timeout:
         try:
             if DeltaTable.isDeltaTable(spark, path):
-                print(f"[wait_for_source] ✅ {path} sẵn sàng ({elapsed}s)", flush=True)
+                print(f"[wait_for_source] {path} sẵn sàng ({elapsed}s)", flush=True)
                 return
         except Exception as e:
-            print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
+            print(f"[wait_for_source]     check error: {e}", flush=True)
         time.sleep(SOURCE_WAIT_POLL_S)
         elapsed += SOURCE_WAIT_POLL_S
         print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)

@@ -105,7 +105,6 @@ def main():
         .option("maxOffsetsPerTrigger", 50000)
         .load()
         .selectExpr("CAST(value AS STRING) as json_str", "timestamp as kafka_ts")
-
     )
 
     parsed = raw.select(
@@ -216,7 +215,7 @@ def main():
     query = (
         parsed.writeStream.foreachBatch(write_batch)
         .option("checkpointLocation", f"{CHECKPOINT_BASE}/kafka_to_bronze")
-        .trigger(processingTime="2 seconds")
+        .trigger(processingTime="10 seconds")
         .start()
     )
     query.awaitTermination()

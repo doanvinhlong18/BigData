@@ -116,10 +116,10 @@ def wait_for_source(spark, path, timeout=600):
     while elapsed < timeout:
         try:
             if DeltaTable.isDeltaTable(spark, path):
-                print(f"[wait_for_source] ✅ {path} sẵn sàng ({elapsed}s)", flush=True)
+                print(f"[wait_for_source] {path} sẵn sàng ({elapsed}s)", flush=True)
                 return
         except Exception as e:
-            print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
+            print(f"[wait_for_source]   check error: {e}", flush=True)
         time.sleep(SOURCE_WAIT_POLL_S)
         elapsed += SOURCE_WAIT_POLL_S
         print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)

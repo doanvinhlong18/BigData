@@ -34,7 +34,7 @@ CHECKPOINT_ROOT = (
 ).rstrip("/")
 CHECKPOINT = f"{CHECKPOINT_ROOT}/silver/response"
 
-WATERMARK_REQ = "10 minutes"
+WATERMARK_REQ = "20 minutes"
 WATERMARK_PICKUP = "5 minutes"
 TRIGGER_INTERVAL = f"{int(os.getenv('SPARK_TRIGGER_INTERVAL_S', '30'))} seconds"
 SOURCE_WAIT_POLL_S = int(os.getenv("SOURCE_WAIT_POLL_S", "15"))
@@ -47,10 +47,10 @@ def wait_for_source(spark, path, timeout=600):
     while elapsed < timeout:
         try:
             if DeltaTable.isDeltaTable(spark, path):
-                print(f"[wait_for_source] ✅ {path} sẵn sàng ({elapsed}s)", flush=True)
+                print(f"[wait_for_source]  {path} sẵn sàng ({elapsed}s)", flush=True)
                 return
         except Exception as e:
-            print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
+            print(f"[wait_for_source]    check error: {e}", flush=True)
         time.sleep(SOURCE_WAIT_POLL_S)
         elapsed += SOURCE_WAIT_POLL_S
         print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)
@@ -132,7 +132,7 @@ def main():
 
     # ── Stream-stream inner join trên trip_id ─────────────────────────────────
     # Spark stream-stream join BẮT BUỘC có range condition trên event time
-    # để bound state size. Pickup phải đến trong [request_datetime, request_datetime + 2h].
+    # để bound state size. Pickup phải đến trong [request_datetime, request_datetime + 0.4h].
     joined = req_stream.join(
         pickup_stream,
         (req_stream["trip_id"] == pickup_stream["pu_trip_id"])
@@ -140,7 +140,7 @@ def main():
         & (
             pickup_stream["pickup_datetime"]
             <= req_stream["request_datetime"]
-            + F.expr(f"INTERVAL {int(os.getenv('JOB3_RANGE_HOURS', '1'))} HOURS")
+            + F.expr(f"INTERVAL {int(os.getenv('JOB3_RANGE_HOURS', '0.4'))} HOURS")
         ),
         how="inner",
     ).select(

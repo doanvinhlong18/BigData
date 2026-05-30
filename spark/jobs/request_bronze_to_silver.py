@@ -66,7 +66,7 @@ def main():
         spark.readStream.format("delta")
         .load(BRONZE_REQUEST)
         .withColumn("request_datetime", to_timestamp(col("request_datetime")))
-        .withWatermark("request_datetime", "15 minutes")
+        .withWatermark("request_datetime", "5 minutes")
         .filter(
             col("trip_id").isNotNull()
             & col("PULocationID").isNotNull()
@@ -74,7 +74,6 @@ def main():
             & col("PULocationID").between(1, 263)
             & col("DOLocationID").between(1, 263)
         )
-        .dropDuplicates(["trip_id"])
         .select(
             "trip_id",
             "hvfhs_license_num",
@@ -93,7 +92,7 @@ def main():
         stream.writeStream.format("delta")
         .outputMode("append")
         .option("checkpointLocation", CHECKPOINT)
-        .trigger(processingTime="10 seconds")
+        .trigger(processingTime="15 seconds")
         .start(SILVER_REQUEST)
     )
     query.awaitTermination()
