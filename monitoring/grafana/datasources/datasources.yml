@@ -1,37 +1,30 @@
 apiVersion: 1
-
 datasources:
-  # Prometheus: infrastructure + airflow + kafka metrics
   - name: Prometheus
     type: prometheus
-    access: proxy
+    uid: Prometheus
     url: http://prometheus:9090
+    access: proxy
     isDefault: false
     jsonData:
-      httpMethod: POST
-      prometheusType: Prometheus
-      prometheusVersion: 2.48.0
-      cacheLevel: "Low"
-    version: 1
-    editable: true
+      timeInterval: "15s"
 
-  # PostgreSQL: predictions_monitoring — datasource chính cho ML panels
-  # Grafana đọc thẳng SQL, không cần metrics-api làm trung gian
   - name: PostgreSQL
     type: postgres
-    access: proxy
+    uid: PostgreSQL
     url: postgres:5432
-    database: bigdata
-    user: ${GF_POSTGRES_USER}
+    access: proxy
+    isDefault: true
+    user: admin
+    # Grafana 10.x: secureJsonData.password phải là literal string
+    # KHÔNG dùng ${VAR} trong secureJsonData — Grafana không resolve
     secureJsonData:
-      password: ${GF_POSTGRES_PASSWORD}
+      password: "admin123"
     jsonData:
+      database: bigdata
       sslmode: disable
       maxOpenConns: 10
       maxIdleConns: 5
       connMaxLifetime: 14400
       postgresVersion: 1600
       timescaledb: false
-    isDefault: true
-    version: 1
-    editable: true

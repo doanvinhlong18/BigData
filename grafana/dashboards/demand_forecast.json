@@ -1,231 +1,1138 @@
 {
-  "title": "NYC Taxi Demand Forecast",
-  "uid": "nyc-demand-v2",
-  "version": 2,
-  "refresh": "1m",
+  "title": "NYC Taxi Demand Forecast — Zone Heatmap",
+  "uid": "nyc-demand-map-v3",
+  "version": 1,
+  "schemaVersion": 38,
+  "refresh": "30s",
   "time": {
     "from": "now-24h",
     "to": "now"
   },
+  "timepicker": {},
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "tags": [
+    "demand",
+    "forecast",
+    "nyc",
+    "map"
+  ],
+  "links": [],
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": []
+  },
   "panels": [
     {
       "id": 1,
-      "title": "Total Requests (24h)",
-      "type": "stat",
-      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
-        "colorMode": "background",
-        "graphMode": "none"
+      "title": "🗺️ NYC Demand Forecast — Zone Heatmap (Latest Window)",
+      "description": "Màu theo predicted_class: 0=trắng xanh (không có demand) → 5=đỏ đậm (demand rất cao). Dữ liệu tự động cập nhật mỗi 30s khi predict_service ghi batch mới vào PostgreSQL.",
+      "type": "geomap",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 18
       },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT COUNT(DISTINCT zone_id) AS zones, COUNT(*) AS total_predictions\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'",
-        "refId": "A"
-      }]
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    zone_id,\n    predicted_class,\n    ROUND(pred_confidence::numeric, 3) AS confidence,\n    used_model,\n    window_end\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nORDER BY zone_id",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#EAF3FF"
+              },
+              {
+                "value": 1,
+                "color": "#B3D4FF"
+              },
+              {
+                "value": 2,
+                "color": "#5C9EE0"
+              },
+              {
+                "value": 3,
+                "color": "#F5A623"
+              },
+              {
+                "value": 4,
+                "color": "#E85D04"
+              },
+              {
+                "value": 5,
+                "color": "#9D0208"
+              }
+            ]
+          },
+          "mappings": [],
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "predicted_class"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Demand Level (0–5)"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#EAF3FF"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#B3D4FF"
+                    },
+                    {
+                      "value": 2,
+                      "color": "#5C9EE0"
+                    },
+                    {
+                      "value": 3,
+                      "color": "#F5A623"
+                    },
+                    {
+                      "value": 4,
+                      "color": "#E85D04"
+                    },
+                    {
+                      "value": 5,
+                      "color": "#9D0208"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 5
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "0 – None",
+                        "color": "#EAF3FF"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "1 – Very Low",
+                        "color": "#B3D4FF"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "2": {
+                        "text": "2 – Low",
+                        "color": "#5C9EE0"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "3": {
+                        "text": "3 – Medium",
+                        "color": "#F5A623"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "4": {
+                        "text": "4 – High",
+                        "color": "#E85D04"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "5": {
+                        "text": "5 – Critical",
+                        "color": "#9D0208"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "zone_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Zone ID"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "viz": false,
+                  "legend": true,
+                  "tooltip": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "confidence"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Confidence"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "viz": true,
+                  "legend": true,
+                  "tooltip": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "used_model"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Model"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "viz": true,
+                  "legend": true,
+                  "tooltip": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "window_end"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Window"
+              },
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "viz": true,
+                  "legend": true,
+                  "tooltip": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "view": {
+          "id": "coords",
+          "lat": 40.7128,
+          "lon": -74.006,
+          "zoom": 10
+        },
+        "controls": {
+          "showZoom": true,
+          "mouseWheelZoom": true,
+          "showAttribution": true,
+          "showScale": true,
+          "showMeasure": false,
+          "showDebug": false
+        },
+        "tooltip": {
+          "mode": "details"
+        },
+        "layers": [
+          {
+            "type": "default",
+            "name": "Basemap",
+            "config": {
+              "showLegend": false
+            }
+          },
+          {
+            "type": "geojson",
+            "name": "NYC TLC Zones — Demand",
+            "config": {
+              "src": "https://data.cityofnewyork.us/api/geospatial/d3c5-ddgc?method=export&type=GeoJSON",
+              "rules": [],
+              "style": {
+                "color": {
+                  "field": "predicted_class",
+                  "mode": "thresholds"
+                },
+                "opacity": 0.75,
+                "rotation": {
+                  "fixed": 0,
+                  "max": 360,
+                  "min": -360,
+                  "mode": "fixed"
+                },
+                "size": {
+                  "fixed": 1,
+                  "max": 15,
+                  "min": 2,
+                  "mode": "fixed"
+                },
+                "symbol": {
+                  "fixed": "img/icons/marker/circle.svg",
+                  "mode": "fixed"
+                },
+                "textConfig": {
+                  "fontSize": 12,
+                  "offsetX": 0,
+                  "offsetY": 0,
+                  "textAlign": "center",
+                  "textBaseline": "middle"
+                }
+              },
+              "featureMappingField": "LocationID",
+              "dataField": "zone_id",
+              "src_json": null
+            },
+            "tooltip": true,
+            "filterData": null
+          }
+        ],
+        "basemap": {
+          "config": {},
+          "name": "Layer 0",
+          "type": "default"
+        },
+        "legend": {
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "title": "📊 Stats",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
     },
     {
       "id": 2,
-      "title": "Model Accuracy (24h avg)",
+      "title": "⏰ Latest Window",
       "type": "stat",
-      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 5,
+        "h": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT MAX(window_end) AS latest_window FROM predictions_monitoring",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#F2CC0C"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "🗾 Zones Predicted",
+      "type": "stat",
+      "gridPos": {
+        "x": 5,
+        "y": 19,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) AS zones FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "blue"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "🎯 Avg Confidence (Latest)",
+      "type": "gauge",
+      "gridPos": {
+        "x": 9,
+        "y": 19,
+        "w": 5,
+        "h": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(AVG(pred_confidence)::numeric, 3) AS avg_conf FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "min": 0,
           "max": 1,
           "thresholds": {
+            "mode": "absolute",
             "steps": [
-              { "value": 0,    "color": "red"    },
-              { "value": 0.55, "color": "yellow" },
-              { "value": 0.7,  "color": "green"  }
+              {
+                "value": null,
+                "color": "red"
+              },
+              {
+                "value": 0.5,
+                "color": "yellow"
+              },
+              {
+                "value": 0.7,
+                "color": "green"
+              }
             ]
           }
-        }
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
-        "colorMode": "background"
-      },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT ROUND(AVG(pred_confidence)::numeric, 4) AS avg_confidence\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'",
-        "refId": "A"
-      }]
-    },
-    {
-      "id": 3,
-      "title": "Weather Fallback Rate",
-      "type": "stat",
-      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
-      "fieldConfig": { "defaults": { "unit": "percentunit" } },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
-        "colorMode": "background"
-      },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT ROUND(\n    AVG(CASE WHEN used_model = 'model_b' THEN 1.0 ELSE 0.0 END) * 100, 1\n) AS fallback_pct\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'",
-        "refId": "A"
-      }]
-    },
-    {
-      "id": 4,
-      "title": "Windows Processed (24h)",
-      "type": "stat",
-      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
-        "colorMode": "none"
-      },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT COUNT(DISTINCT window_end) AS windows_processed\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'",
-        "refId": "A"
-      }]
+        },
+        "overrides": []
+      }
     },
     {
       "id": 5,
-      "title": "Total Requests Over Time",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 4, "w": 16, "h": 8 },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "time_series",
-        "rawQuery": true,
-        "rawSql": "SELECT\n    window_end AS \"time\",\n    AVG(pred_confidence) AS avg_confidence,\n    COUNT(*) AS zones_predicted\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'\nGROUP BY window_end\nORDER BY window_end",
-        "refId": "A"
-      }]
+      "title": "🤖 Model A / B Split",
+      "type": "piechart",
+      "gridPos": {
+        "x": 14,
+        "y": 19,
+        "w": 5,
+        "h": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT used_model, COUNT(*) AS cnt FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring) GROUP BY used_model",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "pieType": "donut",
+        "legendDisplayMode": "table",
+        "placement": "right"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
     },
     {
       "id": 6,
-      "title": "Pickup Delay Mean (avg all zones)",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 12, "w": 16, "h": 8 },
-      "fieldConfig": { "defaults": { "unit": "s" } },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "time_series",
-        "rawQuery": true,
-        "rawSql": "SELECT\n    window_end AS \"time\",\n    AVG(predicted_class) AS avg_predicted_class,\n    AVG(pred_confidence) AS avg_confidence\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'\nGROUP BY window_end\nORDER BY window_end",
-        "refId": "A"
-      }]
+      "title": "📊 Demand Distribution (Latest Window)",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 19,
+        "y": 19,
+        "w": 5,
+        "h": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT predicted_class::text AS level, COUNT(*) AS zones\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nGROUP BY predicted_class ORDER BY predicted_class",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#EAF3FF"
+              },
+              {
+                "value": 1,
+                "color": "#B3D4FF"
+              },
+              {
+                "value": 2,
+                "color": "#5C9EE0"
+              },
+              {
+                "value": 3,
+                "color": "#F5A623"
+              },
+              {
+                "value": 4,
+                "color": "#E85D04"
+              },
+              {
+                "value": 5,
+                "color": "#9D0208"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 21,
+      "title": "📈 Trends",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
     },
     {
       "id": 7,
-      "title": "Model Accuracy Trend",
+      "title": "📈 Demand Level Trend — Zone Count by Level",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "time_series",
-        "rawQuery": true,
-        "rawSql": "SELECT\n    window_end AS \"time\",\n    AVG(pred_confidence) AS avg_confidence,\n    AVG(CASE WHEN used_model = 'model_a' THEN pred_confidence END) AS model_a_confidence,\n    AVG(CASE WHEN used_model = 'model_b' THEN pred_confidence END) AS model_b_confidence\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'\nGROUP BY window_end\nORDER BY window_end",
-        "refId": "A"
-      }]
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 16,
+        "h": 8
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    window_end AS \"time\",\n    SUM(CASE WHEN predicted_class = 0 THEN 1 ELSE 0 END) AS \"0 – None\",\n    SUM(CASE WHEN predicted_class = 1 THEN 1 ELSE 0 END) AS \"1 – Very Low\",\n    SUM(CASE WHEN predicted_class = 2 THEN 1 ELSE 0 END) AS \"2 – Low\",\n    SUM(CASE WHEN predicted_class = 3 THEN 1 ELSE 0 END) AS \"3 – Medium\",\n    SUM(CASE WHEN predicted_class = 4 THEN 1 ELSE 0 END) AS \"4 – High\",\n    SUM(CASE WHEN predicted_class = 5 THEN 1 ELSE 0 END) AS \"5 – Critical\"\nFROM predictions_monitoring\nWHERE $__timeFilter(window_end)\nGROUP BY window_end\nORDER BY window_end",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "gradientMode": "none"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "0 – None"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#EAF3FF"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "1 – Very Low"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#B3D4FF"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "2 – Low"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5C9EE0"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "3 – Medium"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#F5A623"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "4 – High"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#E85D04"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5 – Critical"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#9D0208"
+                }
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": 8,
-      "title": "Model A vs B (zone count)",
-      "type": "piechart",
-      "gridPos": { "x": 12, "y": 20, "w": 8, "h": 8 },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n    used_model,\n    COUNT(*) AS cnt\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nGROUP BY used_model",
-        "refId": "A"
-      }]
+      "title": "🔥 Top 15 Hottest Zones (Latest)",
+      "type": "table",
+      "gridPos": {
+        "x": 16,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    zone_id AS \"Zone\",\n    predicted_class AS \"Demand\",\n    ROUND(pred_confidence::numeric, 3) AS \"Conf\",\n    used_model AS \"Model\"\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nORDER BY predicted_class DESC, pred_confidence DESC\nLIMIT 15",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "Demand",
+            "desc": true
+          }
+        ],
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Demand"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#EAF3FF"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#B3D4FF"
+                    },
+                    {
+                      "value": 2,
+                      "color": "#5C9EE0"
+                    },
+                    {
+                      "value": 3,
+                      "color": "#F5A623"
+                    },
+                    {
+                      "value": 4,
+                      "color": "#E85D04"
+                    },
+                    {
+                      "value": 5,
+                      "color": "#9D0208"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 5
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conf"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 22,
+      "title": "🌡️ Per-Zone 24h Summary",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
     },
     {
       "id": 9,
-      "title": "Demand per Zone — Latest Window",
+      "title": "🌡️ All 263 Zones — Avg Demand (24h)",
+      "description": "Màu ô = avg demand 24h qua. Sắp xếp theo avg demand giảm dần.",
       "type": "table",
-      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 10 },
-      "options": { "sortBy": [{ "displayName": "Imbalance", "desc": true }] },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n    zone_id,\n    predicted_class,\n    ROUND(pred_confidence::numeric, 3) AS confidence,\n    used_model,\n    window_end\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nORDER BY predicted_class DESC, zone_id",
-        "refId": "A"
-      }]
-    },
-    {
-      "id": 10,
-      "title": "Predictions — Latest Window",
-      "type": "table",
-      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 10 },
-      "options": { "sortBy": [{ "displayName": "Confidence", "desc": true }] },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n    zone_id,\n    predicted_class,\n    ROUND(pred_confidence::numeric, 3) AS confidence,\n    used_model,\n    model_version,\n    shadow_predicted_class,\n    window_end\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nORDER BY zone_id",
-        "refId": "A"
-      }]
-    },
-    {
-      "id": 11,
-      "title": "Worst Predicted Zones (24h)",
-      "type": "table",
-      "gridPos": { "x": 0, "y": 38, "w": 12, "h": 8 },
-      "options": { "sortBy": [{ "displayName": "Accuracy", "desc": false }] },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "table",
-        "rawQuery": true,
-        "rawSql": "SELECT\n    zone_id,\n    ROUND(AVG(predicted_class)::numeric, 2) AS avg_class,\n    ROUND(AVG(pred_confidence)::numeric, 3) AS avg_confidence,\n    COUNT(*) AS n_slots\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'\nGROUP BY zone_id\nORDER BY avg_class DESC\nLIMIT 20",
-        "refId": "A"
-      }]
-    },
-    {
-      "id": 12,
-      "title": "Shadow vs Production Accuracy",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 38, "w": 12, "h": 8 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
-      "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-      "targets": [{
-        "datasource": { "type": "postgres", "uid": "PostgreSQL" },
-        "editorMode": "code",
-        "format": "time_series",
-        "rawQuery": true,
-        "rawSql": "SELECT\n    window_end AS \"time\",\n    AVG(pred_confidence) AS production_confidence,\n    AVG(shadow_proba_0 + shadow_proba_1 + shadow_proba_2 +\n        shadow_proba_3 + shadow_proba_4 + shadow_proba_5) AS shadow_total_proba\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '72 hours'\n  AND shadow_predicted_class IS NOT NULL\nGROUP BY window_end\nORDER BY window_end",
-        "refId": "A"
-      }]
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 12
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    zone_id            AS \"Zone\",\n    ROUND(AVG(predicted_class)::numeric, 2) AS \"Avg Demand\",\n    MAX(predicted_class)                     AS \"Peak\",\n    MIN(predicted_class)                     AS \"Min\",\n    ROUND(AVG(pred_confidence)::numeric, 3)  AS \"Avg Conf\",\n    COUNT(*)                                 AS \"# Slots\",\n    MODE() WITHIN GROUP (ORDER BY used_model) AS \"Model\"\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'\nGROUP BY zone_id\nORDER BY \"Avg Demand\" DESC, zone_id",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "Avg Demand",
+            "desc": true
+          }
+        ],
+        "footer": {
+          "show": false
+        },
+        "frameIndex": 0
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Demand"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background-solid"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#EAF3FF"
+                    },
+                    {
+                      "value": 0.5,
+                      "color": "#B3D4FF"
+                    },
+                    {
+                      "value": 1.5,
+                      "color": "#5C9EE0"
+                    },
+                    {
+                      "value": 2.5,
+                      "color": "#F5A623"
+                    },
+                    {
+                      "value": 3.5,
+                      "color": "#E85D04"
+                    },
+                    {
+                      "value": 4.5,
+                      "color": "#9D0208"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 5
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Peak"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background-solid"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#EAF3FF"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#B3D4FF"
+                    },
+                    {
+                      "value": 2,
+                      "color": "#5C9EE0"
+                    },
+                    {
+                      "value": 3,
+                      "color": "#F5A623"
+                    },
+                    {
+                      "value": 4,
+                      "color": "#E85D04"
+                    },
+                    {
+                      "value": 5,
+                      "color": "#9D0208"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Conf"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              }
+            ]
+          }
+        ]
+      }
     }
-  ],
-  "templating": { "list": [] }
+  ]
 }

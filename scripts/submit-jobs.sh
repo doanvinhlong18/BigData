@@ -18,10 +18,13 @@ KAFKA_BS="${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}"
 KAFKA_HOST="${KAFKA_BS%%:*}"
 KAFKA_PORT="${KAFKA_BS##*:}"
 KAFKA_BS_EXECUTOR="${KAFKA_BOOTSTRAP_SERVERS_EXECUTOR:-${KAFKA_BS}}"
+CHECKPOINT_BASE="${STREAMING_CHECKPOINT_BASE:-s3a://checkpoints}"
+STATEFUL_CHECKPOINT_BASE_EFFECTIVE="${STATEFUL_CHECKPOINT_BASE:-${CHECKPOINT_BASE}}"
+STATEFUL_STREAM_MASTER="${STATEFUL_STREAM_MASTER:-${SPARK_MASTER}}"
+LAUNCHER_POLL_INTERVAL_S="${LAUNCHER_POLL_INTERVAL_S:-30}"
 
 # ── Common spark-submit flags ─────────────────────────────────────────────────
-COMMON="spark-submit \
-  --master ${SPARK_MASTER} \
+COMMON_BASE="spark-submit \
   --deploy-mode client \
   --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
   --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
@@ -38,16 +41,74 @@ COMMON="spark-submit \
   --conf spark.driver.host=${DRIVER_HOST} \
   --conf spark.driver.bindAddress=0.0.0.0 \
   --conf spark.port.maxRetries=20 \
+  --conf spark.network.timeout=600s \
+  --conf spark.executor.heartbeatInterval=60s \
+  --conf spark.rpc.askTimeout=300s \
+  --conf spark.rpc.lookupTimeout=300s \
+  --conf spark.shuffle.io.maxRetries=12 \
+  --conf spark.shuffle.io.retryWait=5s \
+  --conf spark.task.maxFailures=8 \
   --conf spark.memory.fraction=0.7 \
   --conf spark.memory.storageFraction=0.3 \
-  --conf spark.executor.memoryOverhead=256m"
+  --conf spark.streaming.backpressure.initialRate=500 \
+  --conf spark.sql.adaptive.enabled=true \
+  --conf spark.hadoop.fs.s3a.connection.maximum=20 \
+  --conf spark.hadoop.fs.s3a.threads.max=8 \
+  --conf spark.hadoop.fs.s3a.multipart.size=67108864 \
+  --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk \
+  --conf spark.hadoop.fs.s3a.fast.upload.active.blocks=2"
+COMMON="${COMMON_BASE} --master ${SPARK_MASTER}"
+COMMON_STATEFUL="${COMMON_BASE} --master ${STATEFUL_STREAM_MASTER}"
 
 # ── Tài nguyên mỗi job ────────────────────────────────────────────────────────
-RES_JOB1="--executor-cores 2 --total-executor-cores 4 --executor-memory 3g --driver-memory 1g --conf spark.sql.shuffle.partitions=12"
-RES_JOB2="--executor-cores 1 --total-executor-cores 2 --executor-memory 2g --driver-memory 1g --conf spark.sql.shuffle.partitions=8"
-RES_JOB3="--executor-cores 1 --total-executor-cores 2 --executor-memory 2g --driver-memory 1g --conf spark.sql.shuffle.partitions=8"
-RES_JOB4="--executor-cores 1 --total-executor-cores 2 --executor-memory 2g --driver-memory 1g --conf spark.sql.shuffle.partitions=8"
-RES_JOB5="--executor-cores 1 --total-executor-cores 1 --executor-memory 1.5g --driver-memory 1g --conf spark.sql.shuffle.partitions=6"
+# Tổng executor RAM: 1.5+0.875+1.25+3.0+3.875 = 10.5g ≤ 12g worker ✅
+# Mỗi job tự set memoryOverhead riêng (không dùng chung 512m nữa)
+RES_JOB1="--conf spark.driver.port=4100 \
+  --executor-cores ${JOB1_EXECUTOR_CORES:-2} \
+  --total-executor-cores ${JOB1_TOTAL_CORES:-2} \
+  --executor-memory ${JOB1_EXECUTOR_MEMORY:-1280m} \
+  --driver-memory ${JOB1_DRIVER_MEMORY:-256m} \
+  --conf spark.executor.memoryOverhead=${JOB1_MEMORY_OVERHEAD:-256m} \
+  --conf spark.memory.storageFraction=0.3 \
+  --conf spark.sql.shuffle.partitions=${JOB1_SHUFFLE_PARTITIONS:-4}"
+
+RES_JOB2="--conf spark.driver.port=4101 \
+  --executor-cores ${JOB2_EXECUTOR_CORES:-1} \
+  --total-executor-cores ${JOB2_TOTAL_CORES:-1} \
+  --executor-memory ${JOB2_EXECUTOR_MEMORY:-640m} \
+  --driver-memory ${JOB2_DRIVER_MEMORY:-256m} \
+  --conf spark.executor.memoryOverhead=${JOB2_MEMORY_OVERHEAD:-256m} \
+  --conf spark.memory.storageFraction=0.3 \
+  --conf spark.sql.shuffle.partitions=${JOB2_SHUFFLE_PARTITIONS:-4}"
+
+RES_JOB3="--conf spark.driver.port=4102 \
+  --executor-cores ${JOB3_EXECUTOR_CORES:-1} \
+  --total-executor-cores ${JOB3_TOTAL_CORES:-1} \
+  --executor-memory ${JOB3_EXECUTOR_MEMORY:-1024m} \
+  --driver-memory ${JOB3_DRIVER_MEMORY:-256m} \
+  --conf spark.executor.memoryOverhead=${JOB3_MEMORY_OVERHEAD:-256m} \
+  --conf spark.memory.storageFraction=0.3 \
+  --conf spark.sql.shuffle.partitions=${JOB3_SHUFFLE_PARTITIONS:-4}"
+
+RES_JOB4="--conf spark.driver.port=4103 \
+  --executor-cores ${JOB4_EXECUTOR_CORES:-2} \
+  --total-executor-cores ${JOB4_TOTAL_CORES:-2} \
+  --executor-memory ${JOB4_EXECUTOR_MEMORY:-2816m} \
+  --driver-memory ${JOB4_DRIVER_MEMORY:-256m} \
+  --conf spark.executor.memoryOverhead=${JOB4_MEMORY_OVERHEAD:-256m} \
+  --conf spark.memory.storageFraction=0.3 \
+  --conf spark.sql.shuffle.partitions=${JOB4_SHUFFLE_PARTITIONS:-4}"
+
+# Job5: total-executor-cores=2 → 1 executor (foreachBatch serialized)
+# storageFraction=0.5: storage pool lớn hơn cho 3× persist + batch read
+RES_JOB5="--conf spark.driver.port=4104 \
+  --executor-cores ${JOB5_EXECUTOR_CORES:-2} \
+  --total-executor-cores ${JOB5_TOTAL_CORES:-2} \
+  --executor-memory ${JOB5_EXECUTOR_MEMORY:-3584m} \
+  --driver-memory ${JOB5_DRIVER_MEMORY:-512m} \
+  --conf spark.executor.memoryOverhead=${JOB5_MEMORY_OVERHEAD:-384m} \
+  --conf spark.memory.storageFraction=${JOB5_STORAGE_FRACTION:-0.5} \
+  --conf spark.sql.shuffle.partitions=${JOB5_SHUFFLE_PARTITIONS:-4}"
 
 
 # ── check_delta: kiểm tra Delta table có commit đầu tiên chưa ─────────────────
@@ -166,6 +227,10 @@ echo " Spark Master : ${SPARK_MASTER}"
 echo " Driver Host  : ${DRIVER_HOST}"
 echo " MinIO        : ${MINIO_EP}"
 echo " Kafka        : ${KAFKA_BS}"
+echo " Checkpoints  : ${CHECKPOINT_BASE}"
+echo " Stateful CP  : ${STATEFUL_CHECKPOINT_BASE_EFFECTIVE}"
+echo " Stateful run : ${STATEFUL_STREAM_MASTER}"
+echo " Launcher poll: ${LAUNCHER_POLL_INTERVAL_S}s"
 echo "================================================================"
 echo ""
 
@@ -179,108 +244,45 @@ echo ""
 echo "[1/5] Kafka → Bronze (request / pickup / dropoff)"
 echo "      Đọc: Kafka topic nyc_taxi_events"
 echo "      Ghi: s3a://bronze/request, bronze/pickup, bronze/dropoff"
-echo "      Tài nguyên: 2 cores / 2GB executor"
+echo "      Tài nguyên: ${JOB1_TOTAL_CORES:-2} total cores, executor=${JOB1_EXECUTOR_CORES:-2} cores/${JOB1_EXECUTOR_MEMORY:-4g}, shuffle=${JOB1_SHUFFLE_PARTITIONS:-6}"
 ${COMMON} ${RES_JOB1} "${JOBS_DIR}/taxi_kafka_to_bronze.py" &
 JOB1_PID=$!
 ALL_PIDS="${JOB1_PID}"
 echo "      PID: ${JOB1_PID}"
 
-# ── LAZY LAUNCHER cho Jobs 2-5 ────────────────────────────────────────────────
-# Dùng python3 s3_check.py để kiểm tra source (hadoop binary không có trong image).
-# spark-submit chỉ được gọi khi source Delta table đã tồn tại.
-# Delta streaming đọc từ commit 0 → không mất dữ liệu dù start muộn.
-# Executor cấp phát tuần tự → tránh OOM từ 5 JVM cùng lúc.
+# ── PARALLEL LAUNCHER cho Jobs 2-5 ───────────────────────────────────────────
+# Submit ngay từ đầu để Spark jobs tự wait cho source Delta.
+# Mục tiêu: giảm độ trễ orchestration và cho phép silver/gold khởi động sớm,
+# thay vì đợi shell launcher polling trước khi submit.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# [2/5] chờ bronze/request rồi submit
 (
-  echo "[2/5-launcher] Chờ s3a://bronze/request ..."
-  elapsed=0
-  while true; do
-    if ! kill -0 "${JOB1_PID}" 2>/dev/null; then
-      echo "[2/5-launcher] ❌ Job1 chết — hủy Job2"; exit 1
-    fi
-    if check_delta "s3a://bronze/request"; then
-      echo "[2/5-launcher] ✅ s3a://bronze/request sẵn sàng (${elapsed}s) → Submit Job2"
-      break
-    fi
-    elapsed=$((elapsed + 10)); sleep 10
-    echo "[2/5-launcher]   ... chưa sẵn sàng (${elapsed}s)"
-  done
-  exec ${COMMON} ${RES_JOB2} "${JOBS_DIR}/request_bronze_to_silver.py"
+  exec ${COMMON_STATEFUL} ${RES_JOB2} "${JOBS_DIR}/request_bronze_to_silver.py"
 ) &
 JOB2_PID=$!
 ALL_PIDS="${ALL_PIDS} ${JOB2_PID}"
-echo "      [2/5] Launcher PID: ${JOB2_PID}"
+echo "      [2/5] PID: ${JOB2_PID}"
 
-# [3/5] chờ silver/request + bronze/pickup rồi submit
 (
-  echo "[3/5-launcher] Chờ s3a://silver/request + s3a://bronze/pickup ..."
-  elapsed=0
-  while true; do
-    if ! kill -0 "${JOB2_PID}" 2>/dev/null; then
-      echo "[3/5-launcher] ❌ Job2 chết — hủy Job3"; exit 1
-    fi
-    rs=false; rp=false
-    check_delta "s3a://silver/request" && rs=true
-    check_delta "s3a://bronze/pickup"  && rp=true
-    if ${rs} && ${rp}; then
-      echo "[3/5-launcher] ✅ silver/request + bronze/pickup sẵn sàng (${elapsed}s) → Submit Job3"
-      break
-    fi
-    elapsed=$((elapsed + 10)); sleep 10
-    echo "[3/5-launcher]   ... silver/request=${rs} bronze/pickup=${rp} (${elapsed}s)"
-  done
-  exec ${COMMON} ${RES_JOB3} "${JOBS_DIR}/request_to_response_silver.py"
+  exec ${COMMON_STATEFUL} ${RES_JOB3} "${JOBS_DIR}/request_to_response_silver.py"
 ) &
 JOB3_PID=$!
 ALL_PIDS="${ALL_PIDS} ${JOB3_PID}"
-echo "      [3/5] Launcher PID: ${JOB3_PID}"
+echo "      [3/5] PID: ${JOB3_PID}"
 
-# [4/5] chờ silver/response + bronze/dropoff rồi submit
 (
-  echo "[4/5-launcher] Chờ s3a://silver/response + s3a://bronze/dropoff ..."
-  elapsed=0
-  while true; do
-    if ! kill -0 "${JOB3_PID}" 2>/dev/null; then
-      echo "[4/5-launcher] ❌ Job3 chết — hủy Job4"; exit 1
-    fi
-    rr=false; rd=false
-    check_delta "s3a://silver/response"  && rr=true
-    check_delta "s3a://bronze/dropoff"   && rd=true
-    if ${rr} && ${rd}; then
-      echo "[4/5-launcher] ✅ silver/response + bronze/dropoff sẵn sàng (${elapsed}s) → Submit Job4"
-      break
-    fi
-    elapsed=$((elapsed + 10)); sleep 10
-    echo "[4/5-launcher]   ... silver/response=${rr} bronze/dropoff=${rd} (${elapsed}s)"
-  done
-  exec ${COMMON} ${RES_JOB4} "${JOBS_DIR}/complete_bronze_to_silver.py"
+  exec ${COMMON_STATEFUL} ${RES_JOB4} "${JOBS_DIR}/complete_bronze_to_silver.py"
 ) &
 JOB4_PID=$!
 ALL_PIDS="${ALL_PIDS} ${JOB4_PID}"
-echo "      [4/5] Launcher PID: ${JOB4_PID}"
+echo "      [4/5] PID: ${JOB4_PID}"
 
-# [5/5] chờ silver/complete rồi submit
 (
-  echo "[5/5-launcher] Chờ s3a://silver/complete ..."
-  elapsed=0
-  while true; do
-    if ! kill -0 "${JOB4_PID}" 2>/dev/null; then
-      echo "[5/5-launcher] ❌ Job4 chết — hủy Job5"; exit 1
-    fi
-    if check_delta "s3a://silver/complete"; then
-      echo "[5/5-launcher] ✅ s3a://silver/complete sẵn sàng (${elapsed}s) → Submit Job5"
-      break
-    fi
-    elapsed=$((elapsed + 10)); sleep 10
-    echo "[5/5-launcher]   ... chưa sẵn sàng (${elapsed}s)"
-  done
   exec ${COMMON} ${RES_JOB5} "${JOBS_DIR}/silver_to_gold.py"
 ) &
 JOB5_PID=$!
 ALL_PIDS="${ALL_PIDS} ${JOB5_PID}"
-echo "      [5/5] Launcher PID: ${JOB5_PID}"
+echo "      [5/5] PID: ${JOB5_PID}"
 
 echo ""
 echo "================================================================"

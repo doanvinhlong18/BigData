@@ -1,92 +1,195 @@
 version: "3.8"
 
 # ================================================================
-# docker-compose.worker.yml — Worker Machine (Machine 2+)
+# docker-compose.worker.yml — WORKER MACHINE
+# Chạy: Zookeeper, Kafka, MinIO, Spark Worker, monitoring
 #
-# HOW IT WORKS (Windows Docker Desktop + LAN)
-# ─────────────────────────────────────────────────────────────
-# Problem: Docker containers use an internal bridge IP (172.x.x.x)
-# that is NOT routable from the master machine via LAN. When a Spark
-# Worker registers with the Master, it must advertise an IP that the
-# Master can actually reach back on — the LAN IP of the Windows host.
-#
-# Solution:
-#   1. The worker container hostname is SPARK_WORKER_HOST.
-#      Inside the container, that hostname resolves to the container IP,
-#      so Spark can bind successfully.
-#   2. On the master machine, map SPARK_WORKER_HOST to WORKER_IP
-#      in docker-compose.master.yml (extra_hosts on spark-master).
-#      Then Spark Master/Driver resolve that same hostname to the LAN IP.
-#   3. Published ports (8081/8085/7337-7360) → Docker Desktop forwards
-#      WORKER_IP:PORT connections from the master to the container.
-#
-# Result: Master sees Worker at SPARK_WORKER_HOST:8085, resolves it to
-# WORKER_IP, and Docker Desktop forwards the connection to the container.
-#
-# Usage:
-#   On worker machine, set WORKER_IP in .env to this machine's LAN IP.
-#   docker compose -f docker-compose.worker.yml up -d
+# KHÔNG chạy: Spark Master, Postgres, Airflow, Grafana, Producers
 # ================================================================
 
 services:
 
+  # ── ZOOKEEPER ─────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 2181"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── KAFKA ──────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: unless-stopped
+    mem_limit: 3g
+    cpus: 2.0
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      # PLAINTEXT: executor (local Docker net) dùng kafka:9092
+      # PLAINTEXT_HOST: producers từ Master dùng WORKER_IP:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${KAFKA_BOOTSTRAP_INTERNAL},PLAINTEXT_HOST://${KAFKA_BOOTSTRAP_EXTERNAL}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 48
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms512M"
+      KAFKA_NUM_NETWORK_THREADS: 4
+      KAFKA_NUM_IO_THREADS: 6
+      KAFKA_JMX_PORT: 9999
+      KAFKA_JMX_HOSTNAME: kafka
+      KAFKA_OPTS: >-
+        -javaagent:/opt/kafka-jmx-exporter/jmx_prometheus_javaagent.jar=7071:/opt/kafka-jmx-exporter/kafka-jmx-exporter.yml
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+      - "7071:7071"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - ./monitoring/kafka-exporter:/opt/kafka-jmx-exporter:ro
+    healthcheck:
+      test: ["CMD-SHELL", "unset KAFKA_OPTS JMX_PORT KAFKA_JMX_PORT && kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        kafka-topics --create --if-not-exists \
+          --bootstrap-server ${KAFKA_BOOTSTRAP_INTERNAL} \
+          --topic nyc_taxi_events \
+          --partitions 3 \
+          --replication-factor 1 \
+          --config retention.ms=172800000 \
+        && echo "✅ Topics OK"
+    restart: on-failure
+
+  # ── MINIO ──────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.5
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      MINIO_API_REQUESTS_MAX: 600
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: curl -f http://localhost:9000/minio/health/live
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  minio-setup:
+    image: minio/mc:latest
+    container_name: minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      mc alias set local ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+      mc mb -p local/bronze
+      mc mb -p local/silver
+      mc mb -p local/gold
+      mc mb -p local/weather
+      mc mb -p local/mlflow-artifacts
+      mc mb -p local/checkpoints
+      echo 'Buckets OK'
+      "
+    restart: on-failure
+
   # ── SPARK WORKER ───────────────────────────────────────────────
+  # Kafka + MinIO cùng máy → executor đọc/ghi KHÔNG qua mạng ✅
   spark-worker:
     image: bigdata-spark:latest
-    container_name: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
-    hostname: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
+    container_name: ${SPARK_WORKER_HOST:-spark-worker-A}
+    hostname: ${SPARK_WORKER_HOST:-spark-worker-A}
     restart: unless-stopped
+    mem_limit: 13g
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     command:
       - bash
       - -lc
       - >
         exec spark-class org.apache.spark.deploy.worker.Worker
-        --host ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
+        --host ${SPARK_WORKER_HOST:-spark-worker-A}
         --port 8085
         --webui-port 8081
         ${SPARK_MASTER_URL}
     environment:
-      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-10g}
-      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-8}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-12g}
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-10}
       SPARK_WORKER_WEBUI_PORT: 8081
-      # Fixed RPC port so Docker Desktop can forward it predictably.
-      # The Master contacts the Worker at WORKER_IP:8085 to launch executors.
       SPARK_WORKER_PORT: "8085"
       SPARK_DAEMON_MEMORY: 512m
-      # Spark advertises this stable hostname. It must resolve to WORKER_IP
-      # from the master container, and to the container IP inside this worker.
-      SPARK_LOCAL_HOSTNAME: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
-      SPARK_PUBLIC_DNS: ${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
-      # Same hostname for executor JVMs so the driver on master can reach them.
+      SPARK_LOCAL_HOSTNAME: ${SPARK_WORKER_HOST:-spark-worker-A}
+      SPARK_PUBLIC_DNS: ${SPARK_WORKER_HOST:-spark-worker-A}
       SPARK_EXECUTOR_OPTS: >-
-        -Dspark.local.hostname=${SPARK_WORKER_HOST:?set SPARK_WORKER_HOST in .env}
-      # S3A credentials — worker writes Parquet/Delta to MinIO on master
+        -Dspark.local.hostname=${SPARK_WORKER_HOST:-spark-worker-A}
+      # MinIO và Kafka local → dùng internal hostname
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       PYSPARK_PYTHON: /usr/bin/python3
       PYSPARK_DRIVER_PYTHON: /usr/bin/python3
     ports:
-      - "8081:8081"   # Spark Worker Web UI (also scraped by Prometheus)
-      - "8085:8085"   # Spark Worker RPC (Master → Worker for executor launch)
-      - "7337-7360:7337-7360"   # Block Manager (shuffle/broadcast between driver & executors)
+      - "8081:8081"
+      - "8085:8085"
+      - "7337-7360:7337-7360"
     volumes:
-      # Spark jobs must exist on the worker machine too (synced via git/rsync)
       - ./spark/jobs:/opt/spark/app/spark/jobs:ro
-      # Override the baked-in spark-defaults.conf with the repo version
-      # so blockManager.port and driver.bindAddress are always in sync
       - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
     extra_hosts:
-      # Resolve master-side service hostnames to the master's LAN IP.
-      # This lets Spark config and S3A use stable hostnames (minio, kafka…)
-      # without hardcoding IPs in application code.
+      # Spark Master ở Master machine
       - "spark-master:${MASTER_IP}"
-      - "kafka:${MASTER_IP}"
-      - "minio:${MASTER_IP}"
+      # Postgres, MLflow ở Master machine
       - "postgres:${MASTER_IP}"
       - "mlflow:${MASTER_IP}"
-      - "spark-worker-A:192.168.110.188"
-      - "spark-worker-B:192.168.110.229"
-      - "spark-worker-C:192.168.110.42"
+      # Kafka và MinIO là LOCAL — trỏ về 127.0.0.1 hoặc hostname container
+      # (không cần extra_hosts, Docker DNS tự resolve)
     healthcheck:
       test: curl -f http://localhost:8081
       interval: 30s
@@ -94,26 +197,19 @@ services:
       retries: 3
       start_period: 60s
 
-  # ── NODE EXPORTER ──────────────────────────────────────────────
-  # Exposes worker machine's host metrics to Prometheus on the master.
-  # Prometheus scrapes WORKER_IP:9100 — no need for the master to know
-  # about Docker internals on the worker.
+  # ── MONITORING ─────────────────────────────────────────────────
   node-exporter:
     image: prom/node-exporter:v1.7.0
     container_name: node-exporter-worker
     restart: unless-stopped
-    network_mode: host
-    pid: host
+    ports:
+      - "9100:9100"
     command:
       - "--path.rootfs=/host"
       - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
     volumes:
-      - /:/host:ro,rslave
+      - /:/host:ro
 
-  # ── cADVISOR (optional) ────────────────────────────────────────
-  # Container resource metrics for worker machine.
-  # Prometheus scrapes WORKER_IP:8090.
-  # Comment out if worker RAM is tight.
   cadvisor-worker:
     image: gcr.io/cadvisor/cadvisor:v0.47.2
     container_name: cadvisor-worker
@@ -126,11 +222,16 @@ services:
       - /var/run:/var/run:ro
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
     command:
       - "--port=8080"
       - "--housekeeping_interval=15s"
       - "--docker_only=true"
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  minio-data:
 
 networks:
   default:

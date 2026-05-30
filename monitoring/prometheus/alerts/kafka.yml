@@ -2,84 +2,50 @@ groups:
   - name: kafka_alerts
     interval: 30s
     rules:
-
-      # ── Broker down ──────────────────────────────────────────
       - alert: KafkaBrokerDown
         expr: up{job="kafka"} == 0
         for: 1m
-        labels:
-          severity: critical
-          component: kafka
+        labels: { severity: critical, component: kafka }
         annotations:
-          summary: "🔴 Kafka broker DOWN"
-          description: "Kafka broker không phản hồi trong 1 phút. Pipeline sẽ ngừng nhận data."
+          summary: " Kafka broker DOWN"
+          description: "Kafka không phản hồi — pipeline ngừng nhận data."
 
-      # ── Zookeeper down ───────────────────────────────────────
-      - alert: ZookeeperDown
-        expr: up{job="zookeeper"} == 0
+      - alert: KafkaOfflinePartitions
+        expr: kafka_controller_offline_partitions_count > 0
         for: 1m
-        labels:
-          severity: critical
-          component: kafka
+        labels: { severity: critical, component: kafka }
         annotations:
-          summary: "🔴 Zookeeper DOWN"
-          description: "Zookeeper down — Kafka sẽ không thể hoạt động."
+          summary: " {{ $value }} Kafka partition OFFLINE"
+          description: "Partition offline — consumer không đọc được data."
 
-      # ── Consumer lag cao — Spark Streaming bị chậm ───────────
-      - alert: KafkaConsumerLagHigh
-        expr: kafka_consumer_group_lag{topic="nyc_taxi_events"} > 50000
-        for: 5m
-        labels:
-          severity: warning
-          component: kafka
+      - alert: KafkaNoActiveController
+        expr: kafka_controller_active_controller_count == 0
+        for: 1m
+        labels: { severity: critical, component: kafka }
         annotations:
-          summary: "⚠️ Kafka consumer lag cao: {{ $value }} messages"
-          description: |
-            Consumer group {{ $labels.consumer_group }} lag {{ $value }} messages trên topic nyc_taxi_events.
-            Spark Streaming đang xử lý chậm hơn producer. Kiểm tra Spark worker resources.
+          summary: " Không có Kafka controller active"
+          description: "Cluster Kafka mất controller."
 
-      - alert: KafkaConsumerLagCritical
-        expr: kafka_consumer_group_lag{topic="nyc_taxi_events"} > 200000
-        for: 3m
-        labels:
-          severity: critical
-          component: kafka
-        annotations:
-          summary: "🔴 Kafka consumer lag CRITICAL: {{ $value }} messages"
-          description: |
-            Lag > 200k messages. Spark Streaming bị stuck hoặc crash.
-            Cần restart Spark job hoặc scale thêm worker.
-
-      # ── Under-replicated partitions ───────────────────────────
       - alert: KafkaUnderReplicatedPartitions
         expr: kafka_server_replicamanager_underreplicatedpartitions > 0
         for: 2m
-        labels:
-          severity: warning
-          component: kafka
+        labels: { severity: warning, component: kafka }
         annotations:
-          summary: "⚠️ Kafka có {{ $value }} under-replicated partition"
-          description: "Một số partition chưa được replicate đủ. Dữ liệu có thể bị mất nếu broker fail."
+          summary: " Kafka {{ $value }} under-replicated partition"
+          description: "Partition chưa replicate đủ."
 
-      # ── Disk Kafka full ───────────────────────────────────────
-      - alert: KafkaLogDirUsageHigh
-        expr: kafka_log_log_size{topic="nyc_taxi_events"} > 5e9
-        for: 10m
-        labels:
-          severity: warning
-          component: kafka
-        annotations:
-          summary: "⚠️ Kafka log size > 5GB cho topic nyc_taxi_events"
-          description: "Log retention có thể không xóa kịp. Kiểm tra KAFKA_LOG_RETENTION_HOURS."
-
-      # ── Producer không ghi vào Kafka ─────────────────────────
       - alert: KafkaNoMessagesIngested
-        expr: |
-          rate(kafka_server_brokertopicmetrics_messagesin_total{topic="nyc_taxi_events"}[5m]) == 0
+        expr: sum(kafka_server_brokertopicmetrics_messagesin_rate1m{topic="nyc_taxi_events"}) == 0
         for: 10m
-        labels:
-          severity: warning
-          component: kafka
+        labels: { severity: warning, component: kafka }
         annotations:
-          summary: "⚠️ Không có message mới vào topic nyc_taxi_events trong 10 phút"
-          description: "Producer có thể đã crash hoặc finish. Kiểm tra container request-producer và response-producer."
+          summary: " Không có message mới vào Kafka trong 10 phút"
+          description: "Producers có thể đã crash hoặc finish dataset."
+
+      - alert: KafkaJVMHeapHigh
+        expr: kafka_jvm_heap_used_bytes / kafka_jvm_heap_max_bytes > 0.85
+        for: 5m
+        labels: { severity: warning, component: kafka }
+        annotations:
+          summary: " Kafka JVM heap > 85%"
+          description: "Nguy cơ OOM. Tăng KAFKA_HEAP_OPTS nếu cần."

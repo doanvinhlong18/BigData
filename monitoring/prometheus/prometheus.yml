@@ -10,35 +10,28 @@ rule_files:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: [] # alertmanager removed (demo mode)
+        - targets: []
 
 scrape_configs:
-  # ── Prometheus self ────────────────────────────────────────
   - job_name: "prometheus"
     static_configs:
       - targets: ["localhost:9090"]
 
-  # ── Kafka JMX Exporter ────────────────────────────────────
+  # Kafka JMX — ở Worker machine
   - job_name: "kafka"
+    scrape_interval: 15s
     static_configs:
-      - targets: ["kafka:7071"]
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: instance
-        replacement: "kafka-broker-1"
+      - targets: ["__WORKER_IP__:7071"]
+        labels:
+          instance: "kafka-broker-1"
 
-  # ── Kafka Consumer Lag ────────────────────────────────────
-  - job_name: "kafka-consumer-lag"
-    static_configs:
-      - targets: ["kafka-lag-exporter:8000"]
-
-  # ── Zookeeper (blackbox tcp) ───────────────────────────────
+  # Zookeeper — ở Worker machine
   - job_name: "zookeeper"
     metrics_path: /probe
     params:
       module: [tcp_connect]
     static_configs:
-      - targets: ["zookeeper:2181"]
+      - targets: ["__WORKER_IP__:2181"]
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
@@ -47,61 +40,53 @@ scrape_configs:
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
-  # ── Spark Master ──────────────────────────────────────────
+  # Spark Master — ở Master machine (local Docker network)
   - job_name: "spark-master"
     metrics_path: "/metrics/master/prometheus/"
     static_configs:
       - targets: ["spark-master:8080"]
 
-  # ── Spark Worker (local — on master Docker network) ───────────
-  # Optional local worker (spark-worker-local in docker-compose.master.yml).
-  # Comment out if you disabled it.
-  - job_name: "spark-worker-local"
-    metrics_path: "/metrics/worker/prometheus/"
-    static_configs:
-      - targets: ["spark-worker-local:8082"]
-        labels:
-          machine: "master"
-
-  # ── Spark Worker (remote machine via LAN) ─────────────────────
-  # __SPARK_WORKER_HOST__ is rendered from .env by docker-compose.master.yml.
-  # After editing, reload: curl -X POST http://localhost:9090/-/reload
+  # Spark Worker — ở Worker machine
   - job_name: "spark-worker-remote"
     metrics_path: "/metrics/worker/prometheus/"
     static_configs:
-      - targets: ["__SPARK_WORKER_HOST__:8081"]
+      - targets: ["__SPARK_WORKER_A_HOST__:8081"]
         labels:
           machine: "worker-A"
 
-  # ── Spark Driver ──────────────────────────────────────────
-  - job_name: "spark-driver-metrics"
+  # Spark Driver (5 jobs, port 4040-4044 trên Master)
+  - job_name: "spark-driver"
     metrics_path: "/metrics/driver/prometheus/"
+    scrape_interval: 15s
     static_configs:
-      - targets: ["spark-master:4040"]
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: spark_role
-        replacement: "driver"
+      - targets:
+          [
+            "spark-master:4040",
+            "spark-master:4041",
+            "spark-master:4042",
+            "spark-master:4043",
+            "spark-master:4044",
+          ]
 
-  # ── MinIO ─────────────────────────────────────────────────
+  # MinIO — ở Worker machine
   - job_name: "minio"
     metrics_path: "/minio/v2/metrics/cluster"
     static_configs:
-      - targets: ["minio:9000"]
+      - targets: ["__WORKER_IP__:9000"]
 
-  # ── Airflow (StatsD → Prometheus) ─────────────────────────
+  # Airflow StatsD
   - job_name: "airflow"
+    scrape_interval: 30s
     static_configs:
       - targets: ["airflow-statsd-exporter:9102"]
 
-  # ── MLflow (blackbox http) ────────────────────────────────
+  # MLflow — blackbox
   - job_name: "mlflow-health"
     metrics_path: "/probe"
     params:
       module: [http_2xx]
     static_configs:
-      - targets:
-          - "http://mlflow:5000/health"
+      - targets: ["http://mlflow:5000/health"]
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
@@ -110,7 +95,7 @@ scrape_configs:
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
-  # ── PostgreSQL (blackbox tcp) ─────────────────────────────
+  # Postgres — blackbox
   - job_name: "postgres"
     metrics_path: /probe
     params:
@@ -125,48 +110,42 @@ scrape_configs:
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
-  # ── Grafana ───────────────────────────────────────────────
   - job_name: "grafana"
     metrics_path: "/metrics"
     static_configs:
       - targets: ["grafana:3000"]
 
-  # ── predict-service ───────────────────────────────────────
-  # FIX: Thêm scrape job để alert "PredictServiceStale" có metric thực tế.
-  # predict_service expose prometheus_client HTTP server trên port 8001.
-  # Metric chính: predict_service_last_prediction_timestamp (unix timestamp)
   - job_name: "predict-service"
     static_configs:
       - targets: ["predict-service:8001"]
 
-  # ── cAdvisor ─────────────────────────────────────────────
+  # cAdvisor Master
   - job_name: "cadvisor"
+    scrape_interval: 15s
     static_configs:
       - targets: ["cadvisor:8080"]
-#    metric_relabel_configs:
-#      - source_labels: [container_label_com_docker_compose_service]
-#        regex: "kafka|spark-master|spark-worker|airflow|minio|mlflow|zookeeper|request-producer|pickup-producer|dropoff-producer|postgres"
-#        action: keep
+    metric_relabel_configs:
+      - source_labels: [container_label_com_docker_compose_service]
+        regex: ".+"
+        action: keep
 
-  # ── Node Exporter (master machine) ───────────────────────────
+  # Node Exporter Master
   - job_name: "node-exporter-master"
     static_configs:
-      - targets: ["localhost:9100"]
+      - targets: ["node-exporter:9100"]
         labels:
           machine: "master"
 
-  # ── Node Exporter (worker machine via LAN) ────────────────────
-  # __SPARK_WORKER_HOST__ is rendered from .env by docker-compose.master.yml.
+  # Node Exporter Worker
   - job_name: "node-exporter-worker"
     static_configs:
-      - targets: ["__SPARK_WORKER_HOST__:9100"]
+      - targets: ["__WORKER_IP__:9100"]
         labels:
           machine: "worker-A"
 
-  # ── cAdvisor (worker machine via LAN) ─────────────────────────
-  # __SPARK_WORKER_HOST__ is rendered from .env by docker-compose.master.yml.
+  # cAdvisor Worker
   - job_name: "cadvisor-worker"
     static_configs:
-      - targets: ["__SPARK_WORKER_HOST__:8090"]
+      - targets: ["__WORKER_IP__:8090"]
         labels:
           machine: "worker-A"

@@ -37,11 +37,20 @@ MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 BRONZE_DROPOFF = "s3a://bronze/dropoff"
 SILVER_RESPONSE = "s3a://silver/response"
 SILVER_COMPLETE = "s3a://silver/complete"
-CHECKPOINT = "s3a://checkpoints/silver/complete"
+CHECKPOINT_ROOT = (
+    os.getenv("STATEFUL_CHECKPOINT_BASE")
+    or os.getenv("STREAMING_CHECKPOINT_BASE")
+    or "s3a://checkpoints"
+).rstrip("/")
+CHECKPOINT = f"{CHECKPOINT_ROOT}/silver/complete"
 
 # ── WATERMARK CONFIG ─────────────────────────────────────────
-RESPONSE_WATERMARK = "2 hours"
-DROPOFF_WATERMARK = "15 minutes"
+RESPONSE_WATERMARK = (
+    f"{int(os.getenv('JOB4_RESPONSE_WATERMARK_MINUTES', '10'))} minutes"
+)
+DROPOFF_WATERMARK = "5 minutes"
+TRIGGER_INTERVAL = f"{int(os.getenv('SPARK_TRIGGER_INTERVAL_S', '30'))} seconds"
+SOURCE_WAIT_POLL_S = int(os.getenv("SOURCE_WAIT_POLL_S", "15"))
 
 
 def wait_for_source(spark, path, timeout=600):
@@ -55,8 +64,8 @@ def wait_for_source(spark, path, timeout=600):
                 return
         except Exception as e:
             print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
-        time.sleep(10)
-        elapsed += 10
+        time.sleep(SOURCE_WAIT_POLL_S)
+        elapsed += SOURCE_WAIT_POLL_S
         print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)
     raise TimeoutError(f"Source {path} không xuất hiện sau {timeout}s")
 
@@ -86,6 +95,9 @@ def main():
     wait_for_source(spark, SILVER_RESPONSE)
     wait_for_source(spark, BRONZE_DROPOFF)
 
+    spark.conf.set("spark.sql.streaming.stateStore.maintenanceInterval", "30s")
+    spark.conf.set("spark.sql.streaming.minBatchesToRetain", "10")
+
     # ─────────────────────────────────────────────
     # Stream: Silver/response
     # ─────────────────────────────────────────────
@@ -111,8 +123,6 @@ def main():
             "wav_request_flag",
             "access_a_ride_flag",
             "shared_request_flag",
-            "shared_match_flag",
-            "wav_match_flag",
         )
     )
 
@@ -156,10 +166,13 @@ def main():
         response_stream,
         on=[
             dropoff_stream.trip_id == response_stream.trip_id,
-            # ⚠️ Event-time constraint để giới hạn state
+            # Event-time constraints để giới hạn state store.
             dropoff_stream.dropoff_datetime >= response_stream.pickup_datetime,
-            # dropoff_stream.dropoff_datetime
-            # <= response_stream.pickup_datetime + expr("INTERVAL 2 HOURS"),
+            dropoff_stream.dropoff_datetime
+            <= response_stream.pickup_datetime
+            + expr(
+                f"INTERVAL {int(os.getenv('JOB4_RANGE_HOURS', '1'))} HOURS"
+            ),  # đa số chuyến < 1h
         ],
         how="inner",
     ).select(
@@ -204,7 +217,7 @@ def main():
         .outputMode("append")
         .option("checkpointLocation", CHECKPOINT)
         .option("mergeSchema", "true")
-        .trigger(processingTime="5 seconds")
+        .trigger(processingTime=TRIGGER_INTERVAL)
         .start(SILVER_COMPLETE)
     )
 
