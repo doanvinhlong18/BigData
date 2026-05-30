@@ -279,7 +279,6 @@ services:
       --default-artifact-root s3://mlflow-artifacts/
       --host 0.0.0.0
       --port 5000
-      --allowed-hosts *
     extra_hosts:
       - "minio:${WORKER_IP}"
     ports:

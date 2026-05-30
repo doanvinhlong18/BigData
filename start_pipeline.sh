@@ -225,27 +225,53 @@ echo ""
 check_model() {
     local model_name="$1"
     local result
-    result=$(curl -s "${MLFLOW_URL}/api/2.0/mlflow/model-versions/search?filter=name%3D%27${model_name}%27%20AND%20current_stage%3D%27Production%27" 2>/dev/null || echo "")
-    echo "$result" | grep -q '"version"'
+    # MLflow 2.12 accepts filtering by name here, but not "AND current_stage".
+    result=$(curl -s "${MLFLOW_URL}/api/2.0/mlflow/model-versions/search?filter=name%3D%27${model_name}%27" 2>/dev/null || echo "")
+    echo "$result" | grep -Eq '"current_stage"[[:space:]]*:[[:space:]]*"Production"'
 }
 
-info "Script đang tự kiểm tra MLflow mỗi 15 giây..."
+models_ready() {
+    check_model "demand_forecast_model_a" && check_model "demand_forecast_model_b"
+}
+
+find_upload_python() {
+    if [ -f ".venv/Scripts/python.exe" ]; then
+        echo ".venv/Scripts/python.exe"
+    elif [ -f ".venv/bin/python" ]; then
+        echo ".venv/bin/python"
+    elif command -v python >/dev/null 2>&1; then
+        command -v python
+    elif command -v python3 >/dev/null 2>&1; then
+        command -v python3
+    else
+        return 1
+    fi
+}
+
+if models_ready; then
+    success "Model đã có trên MLflow, bỏ qua upload."
+else
+    UPLOAD_PY="$(find_upload_python || true)"
+    if [ -n "${UPLOAD_PY}" ]; then
+        info "Tự upload model lên MLflow bằng: ${UPLOAD_PY}"
+        if "${UPLOAD_PY}" upload_model_to_mlflow.py 2>&1 | tee "$LOG_DIR/mlflow_upload.log"; then
+            success "Upload model hoàn tất."
+        else
+            warn "Upload tự động thất bại. Xem $LOG_DIR/mlflow_upload.log"
+            warn "Bạn vẫn có thể upload thủ công rồi để script tự kiểm tra tiếp."
+        fi
+    else
+        warn "Không tìm thấy Python để chạy upload_model_to_mlflow.py"
+    fi
+fi
+
+info "Script đang kiểm tra MLflow mỗi 15 giây..."
 info "Hoặc nhấn ${BOLD}Enter${NC} để bỏ qua và dùng fallback (predict class 0)."
 echo ""
 
 # Chạy check trong background, đồng thời chờ input người dùng
 SKIP_MODEL=false
 while true; do
-    # Non-blocking read với timeout 15 giây
-    if read -t 15 -r -p "  [Chờ model...] Nhấn Enter để bỏ qua → " INPUT 2>/dev/null; then
-        warn "Bỏ qua upload model. predict-service dùng fallback."
-        warn "Upload sau bằng: python upload_model_to_mlflow.py"
-        warn "predict-service tự reload model sau tối đa 5 phút."
-        SKIP_MODEL=true
-        break
-    fi
-
-    # Timeout → kiểm tra model
     MODEL_A_OK=false
     MODEL_B_OK=false
     check_model "demand_forecast_model_a" && MODEL_A_OK=true || true
@@ -261,6 +287,14 @@ while true; do
         # In trạng thái từng model
         [ "$MODEL_A_OK" = true ] && echo -e "    model_a: ${GREEN}OK${NC}" || echo -e "    model_a: ${YELLOW}chờ...${NC}"
         [ "$MODEL_B_OK" = true ] && echo -e "    model_b: ${GREEN}OK${NC}" || echo -e "    model_b: ${YELLOW}chờ...${NC}"
+    fi
+
+    if read -t 15 -r -p "  [Chờ model...] Nhấn Enter để bỏ qua → " INPUT 2>/dev/null; then
+        warn "Bỏ qua upload model. predict-service dùng fallback."
+        warn "Upload sau bằng: python upload_model_to_mlflow.py"
+        warn "predict-service tự reload model sau tối đa 5 phút."
+        SKIP_MODEL=true
+        break
     fi
 done
 
