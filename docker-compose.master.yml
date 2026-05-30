@@ -121,7 +121,7 @@ services:
     image: postgres:16-alpine
     container_name: postgres
     restart: unless-stopped
-    mem_limit: 1g
+    mem_limit: 2g
     cpus: 1.0
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -267,7 +267,7 @@ services:
       dockerfile: Dockerfile
     container_name: mlflow
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 2g
     depends_on:
       postgres:
         condition: service_healthy
@@ -279,6 +279,8 @@ services:
       --default-artifact-root s3://mlflow-artifacts/
       --host 0.0.0.0
       --port 5000
+      --workers 1
+      --allowed-hosts ${MLFLOW_ALLOWED_HOSTS:-*}
     extra_hosts:
       - "minio:${WORKER_IP}"
     ports:

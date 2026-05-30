@@ -307,7 +307,9 @@ info "Chờ spark-worker đăng ký với master..."
 sleep 10
 
 info "Submitting 5 Spark streaming jobs..."
-docker exec spark-master bash /opt/spark/app/scripts/submit-jobs.sh \
+# Git Bash/MSYS auto-converts /opt/... to a Windows path when invoking docker.exe.
+# Disable that conversion so the path is interpreted inside the container.
+MSYS_NO_PATHCONV=1 docker exec spark-master bash /opt/spark/app/scripts/submit-jobs.sh \
     2>&1 | tee "$LOG_DIR/spark_submit.log"
 
 if [ ${PIPESTATUS[0]} -eq 0 ]; then
