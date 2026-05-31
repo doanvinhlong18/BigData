@@ -10,14 +10,16 @@ Ngày rà soát: 31/05/2026.
 
 ## Dashboard Demand Forecast
 
-Map đã chuyển sang nguồn GeoJSON động: `http://localhost:8002/zone-predictions.geojson`.
+Map đã chuyển sang layer `Dynamic GeoJSON` để tự cập nhật màu theo query Postgres mỗi lần dashboard refresh.
+
+Nguồn geometry vẫn là `http://localhost:8002/zone-predictions.geojson`, nhưng màu chính không còn phụ thuộc vào static style trong GeoJSON. Dashboard query latest prediction từ bảng `predictions_monitoring`, rồi layer `Dynamic GeoJSON` map `zone_id` trong query với `feature.id` trong GeoJSON.
 
 Lỗi map "tối om" sau khi sửa lần đầu có 2 nguyên nhân:
 
 - Container `predict-service` vẫn đang chạy cấu hình cũ, chưa publish port `8002` ra host và chưa có env `GEOJSON_PORT`. Trình duyệt không tải được `zone-predictions.geojson`, nên Geomap chỉ còn nền mặc định theo dark theme.
-- Dashboard dùng các field style cũ như `fillColor`, `strokeColor`, `strokeWidth`. Với static GeoJSON layer của Grafana hiện tại, các field chắc chắn được dùng là `style.color`, `opacity`, `lineWidth` và `rules` theo feature property. Vì vậy map đã được đổi sang `rules` theo `predicted_class`, ép basemap sáng và thêm layer viền trắng để từng TLC zone nhìn rõ hơn.
+- Dashboard dùng các field style cũ như `fillColor`, `strokeColor`, `strokeWidth`. Với static GeoJSON layer của Grafana hiện tại, các field chắc chắn được dùng là `style.color`, `opacity`, `lineWidth` và `rules` theo feature property. Sau đó map được đổi tiếp sang `Dynamic GeoJSON` để màu tự refresh theo query Postgres, ép basemap sáng và thêm layer viền trắng để từng TLC zone nhìn rõ hơn.
 
-Endpoint này được predict service phục vụ bằng cách đọc `nyc_taxi_zones.geojson`, lấy latest prediction từ bảng `predictions_monitoring`, rồi ghi prediction vào `properties` của từng feature.
+Endpoint này được predict service phục vụ bằng cách đọc `nyc_taxi_zones.geojson`, gán `feature.id = LocationID`, lấy latest prediction từ bảng `predictions_monitoring`, rồi ghi prediction vào `properties` của từng feature.
 
 Mỗi zone có các property chính:
 
@@ -27,7 +29,7 @@ Mỗi zone có các property chính:
 - `model`, `model_version`, `window_end`: metadata prediction.
 - `fill`, `fill-opacity`, `stroke`, `stroke-width`: style tham khảo/debug nằm trong GeoJSON.
 
-Grafana hiện tô màu polygon bằng `rules` trên `predicted_class`:
+Grafana hiện tô màu polygon bằng `dataStyle.color.field = predicted_class` của `Dynamic GeoJSON`:
 
 - Rule `predicted_class = 0`: xám rất nhạt.
 - Rule `predicted_class = 1`: xanh nhạt.
@@ -35,7 +37,15 @@ Grafana hiện tô màu polygon bằng `rules` trên `predicted_class`:
 - Rule `predicted_class = 3`: vàng.
 - Rule `predicted_class = 4`: cam.
 - Rule `predicted_class = 5`: đỏ đậm.
-- Zone không có prediction: dùng default style xám, opacity thấp.
+- Zone không có prediction: tím.
+
+Cơ chế tự cập nhật:
+
+- Dashboard refresh mỗi `30s`.
+- Mỗi lần refresh, query map lấy lại latest window trong Postgres.
+- `Dynamic GeoJSON` dùng `zone_id` từ query để tìm đúng `feature.id` trong GeoJSON và đổi màu polygon.
+- Endpoint GeoJSON vẫn có `Cache-Control: no-store`, nhưng geometry chủ yếu dùng làm nền không gian; màu prediction lấy từ query nên không cần reload toàn bộ trang.
+- Query map có thêm một `Seed row` với `zone_id = -1` để tránh lỗi index `0` của plugin `Dynamic GeoJSON` không được style. Row này không khớp với feature nào nên không hiển thị trên bản đồ.
 
 Các panel được giữ:
 

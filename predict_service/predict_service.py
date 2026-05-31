@@ -297,6 +297,9 @@ def _build_prediction_geojson():
         except (TypeError, ValueError):
             zone_id = None
 
+        if zone_id is not None:
+            feature["id"] = zone_id
+
         pred = predictions.get(zone_id)
         if pred:
             predicted_class = pred["predicted_class"]

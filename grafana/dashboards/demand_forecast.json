@@ -57,7 +57,7 @@
                                            "editorMode":  "code",
                                            "format":  "table",
                                            "rawQuery":  true,
-                                           "rawSql":  "WITH latest AS (\n    SELECT MAX(window_end) AS window_end\n    FROM predictions_monitoring\n)\nSELECT\n    zone_id,\n    predicted_class,\n    CASE predicted_class\n        WHEN 0 THEN \u00270 - Không có\u0027\n        WHEN 1 THEN \u00271 - Rất thấp\u0027\n        WHEN 2 THEN \u00272 - Thấp\u0027\n        WHEN 3 THEN \u00273 - Trung bình\u0027\n        WHEN 4 THEN \u00274 - Cao\u0027\n        WHEN 5 THEN \u00275 - Rất cao\u0027\n        ELSE \u0027Không rõ\u0027\n    END AS demand_label,\n    ROUND(pred_confidence::numeric, 3) AS confidence,\n    used_model AS model,\n    COALESCE(model_version, \u0027n/a\u0027) AS model_version,\n    window_end\nFROM predictions_monitoring\nJOIN latest USING (window_end)\nORDER BY zone_id",
+                                           "rawSql":  "WITH latest AS (\n    SELECT MAX(window_end) AS window_end\n    FROM predictions_monitoring\n), latest_predictions AS (\n    SELECT\n        zone_id,\n        predicted_class,\n        CASE predicted_class\n            WHEN 0 THEN \u00270 - Không có\u0027\n            WHEN 1 THEN \u00271 - Rất thấp\u0027\n            WHEN 2 THEN \u00272 - Thấp\u0027\n            WHEN 3 THEN \u00273 - Trung bình\u0027\n            WHEN 4 THEN \u00274 - Cao\u0027\n            WHEN 5 THEN \u00275 - Rất cao\u0027\n            ELSE \u0027Không rõ\u0027\n        END AS demand_label,\n        ROUND(pred_confidence::numeric, 3) AS confidence,\n        used_model AS model,\n        COALESCE(model_version, \u0027n/a\u0027) AS model_version,\n        window_end,\n        1 AS sort_key\n    FROM predictions_monitoring\n    JOIN latest USING (window_end)\n), map_seed AS (\n    SELECT\n        -1 AS zone_id,\n        NULL::integer AS predicted_class,\n        \u0027Seed row\u0027 AS demand_label,\n        NULL::numeric AS confidence,\n        NULL::text AS model,\n        NULL::text AS model_version,\n        (SELECT window_end FROM latest) AS window_end,\n        0 AS sort_key\n)\nSELECT\n    zone_id,\n    predicted_class,\n    demand_label,\n    confidence,\n    model,\n    model_version,\n    window_end\nFROM (\n    SELECT * FROM map_seed\n    UNION ALL\n    SELECT * FROM latest_predictions\n) rows_for_dynamic_geojson\nORDER BY sort_key, zone_id",
                                            "refId":  "A"
                                        }
                                    ],
@@ -401,96 +401,19 @@
                                                                       }
                                                        },
                                                        {
-                                                           "type":  "geojson",
+                                                           "type":  "dynamic-geojson",
                                                            "name":  "TLC Zones - predicted demand",
                                                            "config":  {
                                                                           "src":  "http://localhost:8002/zone-predictions.geojson",
                                                                           "rules":  [
-                                                                                       {
-                                                                                           "check":  {
-                                                                                                         "property":  "predicted_class",
-                                                                                                         "operation":  "eq",
-                                                                                                         "value":  0
-                                                                                                     },
-                                                                                           "style":  {
-                                                                                                         "color":  {
-                                                                                                                       "fixed":  "#F3F4F6"
-                                                                                                                   },
-                                                                                                         "opacity":  0.9,
-                                                                                                         "lineWidth":  0.35
-                                                                                                     }
-                                                                                       },
-                                                                                       {
-                                                                                           "check":  {
-                                                                                                         "property":  "predicted_class",
-                                                                                                         "operation":  "eq",
-                                                                                                         "value":  1
-                                                                                                     },
-                                                                                           "style":  {
-                                                                                                         "color":  {
-                                                                                                                       "fixed":  "#7DD3FC"
-                                                                                                                   },
-                                                                                                         "opacity":  0.9,
-                                                                                                         "lineWidth":  0.35
-                                                                                                     }
-                                                                                       },
-                                                                                       {
-                                                                                           "check":  {
-                                                                                                         "property":  "predicted_class",
-                                                                                                         "operation":  "eq",
-                                                                                                         "value":  2
-                                                                                                     },
-                                                                                           "style":  {
-                                                                                                         "color":  {
-                                                                                                                       "fixed":  "#2563EB"
-                                                                                                                   },
-                                                                                                         "opacity":  0.88,
-                                                                                                         "lineWidth":  0.35
-                                                                                                     }
-                                                                                       },
-                                                                                       {
-                                                                                           "check":  {
-                                                                                                         "property":  "predicted_class",
-                                                                                                         "operation":  "eq",
-                                                                                                         "value":  3
-                                                                                                     },
-                                                                                           "style":  {
-                                                                                                         "color":  {
-                                                                                                                       "fixed":  "#FACC15"
-                                                                                                                   },
-                                                                                                         "opacity":  0.9,
-                                                                                                         "lineWidth":  0.35
-                                                                                                     }
-                                                                                       },
-                                                                                       {
-                                                                                           "check":  {
-                                                                                                         "property":  "predicted_class",
-                                                                                                         "operation":  "eq",
-                                                                                                         "value":  4
-                                                                                                     },
-                                                                                           "style":  {
-                                                                                                         "color":  {
-                                                                                                                       "fixed":  "#F97316"
-                                                                                                                   },
-                                                                                                         "opacity":  0.9,
-                                                                                                         "lineWidth":  0.35
-                                                                                                     }
-                                                                                       },
-                                                                                       {
-                                                                                           "check":  {
-                                                                                                         "property":  "predicted_class",
-                                                                                                         "operation":  "eq",
-                                                                                                         "value":  5
-                                                                                                     },
-                                                                                           "style":  {
-                                                                                                         "color":  {
-                                                                                                                       "fixed":  "#B91C1C"
-                                                                                                                   },
-                                                                                                         "opacity":  0.9,
-                                                                                                         "lineWidth":  0.35
-                                                                                                     }
-                                                                                       }
+
                                                                                     ],
+                                                                          "idField":  "zone_id",
+                                                                          "dataStyle":  {
+                                                                                            "color":  {
+                                                                                                          "field":  "predicted_class"
+                                                                                                      }
+                                                                                        },
                                                                           "style":  {
                                                                                         "color":  {
                                                                                                       "fixed":  "#D1D5DB"
