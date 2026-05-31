@@ -33,9 +33,15 @@ from urllib.parse import urlparse
 import pandas as pd
 import numpy as np
 import mlflow
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from deltalake import DeltaTable
 import psycopg2
 from psycopg2.extras import execute_values
+
+os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+os.environ.setdefault("AWS_REGION", "us-east-1")
 
 # ── Prometheus metrics export ─────────────────────────────────────────────────
 # FIX: Alert "PredictServiceStale" dùng metric predict_service_last_prediction_timestamp
@@ -65,7 +71,7 @@ METRIC_MODELS_LOADED_TOTAL = Gauge(
 )
 METRIC_MODEL_VERSION = Gauge(
     "predict_service_model_version",
-    "MLflow model version đang được load, 0 nếu chưa load",
+    "MLflow model version predict_service thấy trong registry, 0 nếu chưa có",
     ["model", "stage"],
 )
 
@@ -150,6 +156,44 @@ STORAGE_OPTS = {
     "aws_allow_http": "true",
     "aws_s3_allow_unsafe_rename": "true",
 }
+
+S3_FAST_CONFIG = Config(
+    connect_timeout=3,
+    read_timeout=10,
+    retries={"max_attempts": 2, "mode": "standard"},
+)
+
+
+def _fast_s3_client():
+    return boto3.client(
+        "s3",
+        endpoint_url=MINIO_ENDPOINT,
+        aws_access_key_id=MINIO_KEY,
+        aws_secret_access_key=MINIO_SECRET,
+        config=S3_FAST_CONFIG,
+    )
+
+
+def _parse_s3_uri(uri: str):
+    normalized = uri.replace("s3a://", "s3://", 1)
+    parsed = urlparse(normalized)
+    return parsed.netloc, parsed.path.strip("/")
+
+
+def _s3_prefix_available(uri: str) -> bool:
+    if not uri.startswith(("s3://", "s3a://")):
+        return True
+    bucket, prefix = _parse_s3_uri(uri)
+    try:
+        resp = _fast_s3_client().list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix,
+            MaxKeys=1,
+        )
+        return resp.get("KeyCount", 0) > 0
+    except (BotoCoreError, ClientError, Exception) as e:
+        log.warning(f"[S3] Prefix unavailable at {uri}: {e}")
+        return False
 
 # ── Graceful shutdown ──────────────────────────────────────────────────────────
 _running = True
@@ -412,12 +456,18 @@ def _load_latest_gold():
       - current  (window_end mới nhất)
       - lag92    (window_end - 92 × 15 phút ≈ 23h)
       - lag668   (window_end - 668 × 15 phút ≈ 7 ngày)
-    Dùng Delta stats thay vì full scan.
+    Dùng Delta stats để tìm latest window, sau đó đọc snapshot theo timestamp.
     """
     try:
+        delta_log_uri = f"{GOLD_AGG_PATH.rstrip('/')}/_delta_log/"
+        if not _s3_prefix_available(delta_log_uri):
+            log.warning(f"[GOLD] Delta log unavailable at {delta_log_uri}")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
         dt = DeltaTable(GOLD_AGG_PATH, storage_options=STORAGE_OPTS)
         add_actions = dt.get_add_actions(flatten=True).to_pydict()
         max_col = "max.window_end"
+        full_df = None
 
         if max_col in add_actions and add_actions[max_col]:
             raw_max = max(v for v in add_actions[max_col] if v is not None)
@@ -436,7 +486,34 @@ def _load_latest_gold():
         lag668_we = latest_we - pd.Timedelta(minutes=SLOT_MINUTES * LAG_STEPS[1])
 
         def snap(we):
-            return dt.to_pandas(filters=[("window_end", "=", str(we))])
+            nonlocal full_df
+            target = pd.Timestamp(we)
+            if target.tzinfo is None:
+                target = target.tz_localize("UTC")
+            else:
+                target = target.tz_convert("UTC")
+            target = target.floor("us")
+
+            try:
+                return dt.to_pandas(
+                    filters=[("window_end", "=", target.to_pydatetime())]
+                )
+            except Exception as filter_error:
+                log.warning(
+                    "[GOLD] timestamp pushdown failed for %s: %s; "
+                    "falling back to pandas filter",
+                    target,
+                    filter_error,
+                )
+                if full_df is None:
+                    full_df = dt.to_pandas()
+                    if full_df.empty:
+                        return full_df
+                    full_df["_window_end_utc"] = (
+                        pd.to_datetime(full_df["window_end"], utc=True).dt.floor("us")
+                    )
+                result = full_df.loc[full_df["_window_end_utc"].eq(target)].copy()
+                return result.drop(columns=["_window_end_utc"], errors="ignore")
 
         return snap(latest_we), snap(lag92_we), snap(lag668_we)
 
@@ -526,6 +603,24 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+# ── MLflow artifact helpers ───────────────────────────────────────────────────
+def _s3_artifact_available(source: str) -> bool:
+    if not source or not source.startswith("s3://"):
+        return True
+
+    parsed = urlparse(source)
+    bucket = parsed.netloc
+    prefix = parsed.path.strip("/")
+    key = f"{prefix}/MLmodel" if prefix else "MLmodel"
+
+    try:
+        _fast_s3_client().head_object(Bucket=bucket, Key=key)
+        return True
+    except (BotoCoreError, ClientError, Exception) as e:
+        log.warning(f"[MODEL] Artifact unavailable at {source}: {e}")
+        return False
+
+
 # ── Model loader ───────────────────────────────────────────────────────────────
 class ModelCache:
     """
@@ -545,7 +640,7 @@ class ModelCache:
         self._ver_b = None
         self._shadow_a = None  # Staging version của model_a (nếu có)
         self._shadow_a_ver = None
-        self._last_load = 0.0
+        self._last_load = -float(MODEL_RELOAD_INTERVAL)
         mlflow.set_tracking_uri(MLFLOW_URI)
         self._client = mlflow.tracking.MlflowClient()
         self._publish_metrics()
@@ -584,7 +679,13 @@ class ModelCache:
             vs = self._client.get_latest_versions(name, stages=[stage])
             if not vs:
                 return None, None
-            return mlflow.lightgbm.load_model(f"models:/{name}/{stage}"), vs[0].version
+            version = vs[0]
+            if not _s3_artifact_available(version.source):
+                return None, version.version
+            return (
+                mlflow.lightgbm.load_model(f"models:/{name}/{stage}"),
+                version.version,
+            )
         except Exception as e:
             log.warning(f"[MODEL] {name}/{stage} load failed: {e}")
             return None, None

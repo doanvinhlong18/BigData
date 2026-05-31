@@ -47,7 +47,7 @@ Cơ chế tự cập nhật:
 - Endpoint GeoJSON vẫn có `Cache-Control: no-store`, nhưng geometry chủ yếu dùng làm nền không gian; màu prediction lấy từ query nên không cần reload toàn bộ trang.
 - Query map có thêm một `Seed row` với `zone_id = -1` để tránh lỗi index `0` của plugin `Dynamic GeoJSON` không được style. Row này không khớp với feature nào nên không hiển thị trên bản đồ.
 
-Lưu ý runtime lúc kiểm tra ngày 31/05/2026: bảng `predictions_monitoring` trong database `bigdata` đang có `0` dòng, nên map chỉ có nền đen và zone màu mặc định cho tới khi pipeline ghi lại prediction mới. Đây là vấn đề dữ liệu/model runtime, không phải lỗi style của map.
+Lưu ý runtime lúc kiểm tra ngày 31/05/2026: bảng `predictions_monitoring` trong database `bigdata` đang có `0` dòng, nên map chỉ có nền đen và zone màu mặc định cho tới khi pipeline ghi lại prediction mới. Đây là vấn đề runtime, không phải lỗi style của map. Log mới nhất của `predict-service` cho thấy service không kết nối được tới Worker/MinIO `26.250.104.24:9000`, nên không đọc được `s3://gold/aggregated/_delta_log/`.
 
 Các panel được giữ:
 
@@ -142,7 +142,7 @@ Các metric hỗ trợ thêm:
 - `predict_service_models_loaded_total`: số Production model đang load.
 - `predict_service_model_version{model, stage}`: version MLflow đang load, `0` nếu chưa load.
 
-Lưu ý runtime lúc kiểm tra ngày 31/05/2026: metric đang trả `0/2` vì `predict-service` load MLflow model bị lỗi artifact `404 Not Found` ở các đường dẫn `s3://mlflow-artifacts/.../artifacts/model`. Kiểm tra MinIO cho thấy bucket `mlflow-artifacts` hiện không có object trong prefix `1/`. Khi artifact trên MinIO được khôi phục hoặc model được train/register lại, panel sẽ tự chuyển sang `1/2` hoặc `2/2` sau lần scrape tiếp theo của Prometheus.
+Lưu ý runtime lúc kiểm tra ngày 31/05/2026: metric `predict_service_model_version` đang thấy `model_a=1` và `model_b=1` trong MLflow registry, nhưng `predict_service_model_loaded` vẫn là `0/2` vì service chưa tải được artifact model từ MinIO. Log hiện tại là connect timeout tới `http://26.250.104.24:9000/mlflow-artifacts/.../MLmodel`. Nói cách khác, "đã register/promote model" khác với "predict-service đã download và load model vào RAM". Khi Worker/MinIO reachable và artifact tồn tại, panel sẽ tự chuyển sang `1/2` hoặc `2/2` sau lần reload model tiếp theo.
 
 ## Custom Metrics Mới
 
