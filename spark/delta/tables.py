@@ -40,10 +40,10 @@ class _DeltaMergeBuilder:
         self._jbuilder = jbuilder
 
     def whenMatchedUpdateAll(self):
-        return _DeltaMergeBuilder(self._jbuilder.whenMatchedUpdateAll())
+        return _DeltaMergeBuilder(self._jbuilder.whenMatched().updateAll())
 
     def whenNotMatchedInsertAll(self):
-        return _DeltaMergeBuilder(self._jbuilder.whenNotMatchedInsertAll())
+        return _DeltaMergeBuilder(self._jbuilder.whenNotMatched().insertAll())
 
     def execute(self):
         return self._jbuilder.execute()

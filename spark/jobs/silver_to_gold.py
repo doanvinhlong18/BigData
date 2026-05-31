@@ -73,6 +73,7 @@ ZONE_NEIGHBORS: dict hardcode 263 zones NYC.
 
 import os
 import time
+import traceback
 
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
@@ -96,6 +97,7 @@ MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 SILVER_COMPLETE = "s3a://silver/complete"
 SILVER_RESPONSE = "s3a://silver/response"  # dùng để tính pickup_delay
 GOLD_AGG = "s3a://gold/aggregated"
+GOLD_UPSERT_TMP_ROOT = os.getenv("GOLD_UPSERT_TMP_ROOT", "s3a://gold/_tmp").rstrip("/")
 CHECKPOINT_ROOT = (
     os.getenv("STREAMING_CHECKPOINT_BASE") or "s3a://checkpoints"
 ).rstrip("/")
@@ -109,6 +111,56 @@ WATERMARK = "5 minutes"
 TRIGGER_INTERVAL = f"{int(os.getenv('GOLD_TRIGGER_INTERVAL_S', os.getenv('SPARK_TRIGGER_INTERVAL_S', '60')))} seconds"
 SOURCE_WAIT_POLL_S = int(os.getenv("SOURCE_WAIT_POLL_S", "15"))
 SOURCE_WAIT_TIMEOUT_S = int(os.getenv("SOURCE_WAIT_TIMEOUT_S", "1800"))
+
+
+def delete_path_if_exists(spark, path):
+    """Xóa path tạm trên S3A nếu tồn tại."""
+    jpath = spark._jvm.org.apache.hadoop.fs.Path(path)
+    fs = jpath.getFileSystem(spark._jsc.hadoopConfiguration())
+    fs.delete(jpath, True)
+
+
+def overwrite_upsert_preserving_history(spark, gold_df, batch_id):
+    """
+    Fallback khi Delta MERGE lỗi: ghi lại target bằng existing - keys + batch mới.
+
+    Cách này đắt hơn MERGE nhưng vẫn giữ lịch sử window cũ, tránh lỗi cũ là
+    overwrite toàn bộ gold bằng micro-batch hiện tại rồi làm latest window bị tụt.
+    """
+    tmp_path = f"{GOLD_UPSERT_TMP_ROOT}/aggregated_batch_{batch_id}_{int(time.time())}"
+    keys = gold_df.select("zone_id", "window_end").distinct()
+
+    existing = spark.read.format("delta").load(GOLD_AGG)
+    merged = (
+        existing.join(keys, on=["zone_id", "window_end"], how="left_anti")
+        .unionByName(gold_df, allowMissingColumns=True)
+        .persist(StorageLevel.MEMORY_AND_DISK)
+    )
+
+    try:
+        merged_count = merged.count()
+        print(
+            f"[gold] batch_id={batch_id} fallback_upsert_rows={merged_count}",
+            flush=True,
+        )
+        delete_path_if_exists(spark, tmp_path)
+        (
+            merged.write.format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .save(tmp_path)
+        )
+        (
+            spark.read.format("delta")
+            .load(tmp_path)
+            .write.format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .save(GOLD_AGG)
+        )
+    finally:
+        merged.unpersist()
+        delete_path_if_exists(spark, tmp_path)
 
 
 def wait_for_source(spark, path, timeout=SOURCE_WAIT_TIMEOUT_S):
@@ -146,6 +198,13 @@ def main():
     )
     spark.sparkContext.setLogLevel("WARN")
     start_streaming_metrics_exporter(spark, "silver_to_gold")
+    print(
+        "[gold] config "
+        f"window={WINDOW_DURATION} slide={SLIDE_DURATION} "
+        f"trigger={TRIGGER_INTERVAL} maxFilesPerTrigger={GOLD_MAX_FILES_PER_TRIGGER} "
+        f"lookback={WINDOW_LOOKBACK_MINUTES}m checkpoint={CHECKPOINT}",
+        flush=True,
+    )
 
     # Chờ source sẵn sàng (jobs submit đồng thời)
     wait_for_source(spark, SILVER_COMPLETE)
@@ -405,20 +464,44 @@ def main():
             if gold_count == 0:
                 return
 
-            try:
-                dt = DeltaTable.forPath(spark, GOLD_AGG)
-                (
-                    dt.alias("old")
-                    .merge(
-                        gold.alias("new"),
-                        "old.zone_id = new.zone_id AND old.window_end = new.window_end",
-                    )
-                    .whenMatchedUpdateAll()
-                    .whenNotMatchedInsertAll()
-                    .execute()
+            gold_key_count = gold.select("zone_id", "window_end").distinct().count()
+            if gold_key_count != gold_count:
+                print(
+                    f"[gold] batch_id={batch_id} duplicate_keys="
+                    f"{gold_count - gold_key_count}; dropDuplicates(zone_id, window_end)",
+                    flush=True,
                 )
-            except Exception:
-                # Bảng chưa tồn tại → tạo mới
+                deduped_gold = gold.dropDuplicates(["zone_id", "window_end"]).persist(
+                    StorageLevel.MEMORY_AND_DISK
+                )
+                gold.unpersist()
+                gold = deduped_gold
+                gold_count = gold.count()
+
+            if DeltaTable.isDeltaTable(spark, GOLD_AGG):
+                dt = DeltaTable.forPath(spark, GOLD_AGG)
+                try:
+                    (
+                        dt.alias("old")
+                        .merge(
+                            gold.alias("new"),
+                            "old.zone_id = new.zone_id AND old.window_end = new.window_end",
+                        )
+                        .whenMatchedUpdateAll()
+                        .whenNotMatchedInsertAll()
+                        .execute()
+                    )
+                    print(f"[gold] batch_id={batch_id} merge=OK", flush=True)
+                except Exception as e:
+                    print(
+                        f"[gold] batch_id={batch_id} merge=FAILED "
+                        f"{type(e).__name__}: {e}",
+                        flush=True,
+                    )
+                    traceback.print_exc()
+                    overwrite_upsert_preserving_history(spark, gold, batch_id)
+            else:
+                print(f"[gold] batch_id={batch_id} create {GOLD_AGG}", flush=True)
                 gold.write.format("delta").mode("overwrite").save(GOLD_AGG)
 
             elapsed = time.time() - started

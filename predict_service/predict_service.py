@@ -6,14 +6,14 @@ Thay thế predict_dag trong Airflow.
 Vòng lặp chính: mỗi POLL_INTERVAL giây wall clock:
   1. Đọc Delta stats gold/aggregated → lấy window_end mới nhất
   2. So sánh với slot đã predict trong PG
-  3. Nếu có slot mới → build features → predict 263 zones → upsert PG
-  4. Nếu chưa có slot mới → skip, sleep tiếp
+  3. Nếu có slot mới → build features → predict zones → upsert PG
+  4. Nếu cùng slot nhưng gold có thêm zone do late data → re-predict slot đó
+  5. Nếu chưa có dữ liệu mới → skip, sleep tiếp
 
-Với SPEED_FACTOR=60 và gold trigger 15 giây:
-  - Mỗi 15 giây wall clock gold có 1 slot mới (= 15 phút event_time)
-  - POLL_INTERVAL=15 → predict ngay khi slot vừa sẵn sàng
-  - Lag thực tế: 0–15 giây wall clock = 0–15 phút event_time
-    (tốt hơn nhiều so với loop 4×15s trước đây có lag tối đa 60 giây)
+Với GOLD_SLIDE_DURATION=15 phút event-time và SPEED_FACTOR=3:
+  - Mỗi slot gold mới tương ứng khoảng 5 phút wall-clock
+  - POLL_INTERVAL chỉ là nhịp kiểm tra gold, không đổi stride event-time
+  - Predict chỉ upsert Postgres khi gold có window_end mới
 
 Models được load 1 lần khi khởi động, reload mỗi MODEL_RELOAD_INTERVAL
 giây để tự động nhận model mới sau khi monitoring_dag promote.
@@ -132,11 +132,21 @@ PG_USER = os.getenv("POSTGRES_USER", "admin")
 PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin123")
 ZONES_GEOJSON_PATH = os.getenv("ZONES_GEOJSON_PATH", "/app/nyc_taxi_zones.geojson")
 
-# Mỗi 15 giây poll 1 lần → khớp với gold trigger 15 giây
+
+# Nhịp poll chỉ quyết định độ trễ phát hiện window gold mới.
+# Với POLL_INTERVAL_S=60, predict sẽ bắt slot 5 phút wall-clock trong tối đa ~60s.
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_S", "15"))
 # Reload model mỗi 5 phút để nhận promote mới từ monitoring_dag
 MODEL_RELOAD_INTERVAL = int(os.getenv("MODEL_RELOAD_INTERVAL_S", "300"))
+# 0 = chỉ reprocess cùng slot khi gold có thêm zone so với Postgres.
+# Nếu muốn refresh cùng slot theo chu kỳ, set > 0; mặc định tắt để tránh
+# predicted_at trông "mới" dù gold không đổi.
+REPROCESS_CURRENT_SLOT_INTERVAL = int(
+    os.getenv("REPROCESS_CURRENT_SLOT_INTERVAL_S", "0")
+)
 
+# Gold vẫn slide 15 phút event-time. Với SPEED_FACTOR=3, một slot 15 phút
+# event-time thường xuất hiện sau khoảng 5 phút wall-clock.
 SLOT_MINUTES = 15
 
 RAW_WEATHER_COLS = [
@@ -298,6 +308,30 @@ def _get_last_predicted_slot() -> pd.Timestamp | None:
     except Exception as e:
         log.warning(f"[PG] get_last_predicted_slot failed: {e}")
     return None
+
+
+def _get_prediction_summary(slot_end) -> tuple[int, pd.Timestamp | None]:
+    slot_end = _normalize_timestamp_utc(slot_end)
+    try:
+        with _pg_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(DISTINCT zone_id), MAX(predicted_at)
+                    FROM predictions_monitoring
+                    WHERE window_end = %s
+                    """,
+                    (slot_end.to_pydatetime(),),
+                )
+                row = cur.fetchone()
+        if not row:
+            return 0, None
+        predicted_count = int(row[0] or 0)
+        last_written = _normalize_timestamp_utc(row[1]) if row[1] else None
+        return predicted_count, last_written
+    except Exception as e:
+        log.warning(f"[PG] get_prediction_summary failed for {slot_end}: {e}")
+        return 0, None
 
 
 def _restore_metrics_from_db():
@@ -529,9 +563,9 @@ def _load_latest_gold():
                     full_df = dt.to_pandas()
                     if full_df.empty:
                         return full_df
-                    full_df["_window_end_utc"] = (
-                        pd.to_datetime(full_df["window_end"], utc=True).dt.floor("us")
-                    )
+                    full_df["_window_end_utc"] = pd.to_datetime(
+                        full_df["window_end"], utc=True
+                    ).dt.floor("us")
                 result = full_df.loc[full_df["_window_end_utc"].eq(target)].copy()
                 return result.drop(columns=["_window_end_utc"], errors="ignore")
 
@@ -575,6 +609,38 @@ def _get_s3_fs():
     )
 
 
+def _normalize_weather_frame(wdf: pd.DataFrame, source: str) -> pd.DataFrame:
+    if wdf.empty:
+        return pd.DataFrame()
+
+    wdf = wdf.copy()
+    rename_cols = {}
+    if "zone_id" not in wdf.columns and "LocationID" in wdf.columns:
+        rename_cols["LocationID"] = "zone_id"
+    if "window_end" not in wdf.columns and "datetime" in wdf.columns:
+        rename_cols["datetime"] = "window_end"
+    if rename_cols:
+        wdf = wdf.rename(columns=rename_cols)
+
+    missing = [c for c in ("zone_id", "window_end") if c not in wdf.columns]
+    if missing:
+        log.warning(
+            "[WEATHER] %s missing columns %s; running without this weather frame",
+            source,
+            missing,
+        )
+        return pd.DataFrame()
+
+    wdf["zone_id"] = pd.to_numeric(wdf["zone_id"], errors="coerce")
+    wdf = wdf[wdf["zone_id"].between(1, 263)].copy()
+    if wdf.empty:
+        return pd.DataFrame()
+
+    wdf["zone_id"] = wdf["zone_id"].astype(int)
+    wdf["window_end"] = pd.to_datetime(wdf["window_end"], utc=True).dt.floor("us")
+    return wdf
+
+
 def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
     needed: set[str] = set()
     for delta_min in [
@@ -602,7 +668,7 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
                 format="parquet",
                 filesystem=_get_s3_fs(),
             )
-            part = dataset.to_table().to_pandas()
+            part = _normalize_weather_frame(dataset.to_table().to_pandas(), f"S3 {d}")
             if not part.empty:
                 frames.append(part)
         except Exception:
@@ -610,7 +676,6 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
 
     if frames:
         wdf = pd.concat(frames, ignore_index=True)
-        wdf["window_end"] = pd.to_datetime(wdf["window_end"], utc=True).dt.floor("us")
         return wdf
 
     # 2. Thử local parquet files: datasets/parquet_by_day/{date}.parquet
@@ -619,7 +684,7 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
         fp = os.path.join(WEATHER_PARQUET_LOCAL, f"{d}.parquet")
         if os.path.exists(fp):
             try:
-                part = pq.read_table(fp).to_pandas()
+                part = _normalize_weather_frame(pq.read_table(fp).to_pandas(), fp)
                 if not part.empty:
                     local_frames.append(part)
                     log.debug(f"[WEATHER] Loaded local parquet {fp}")
@@ -628,15 +693,15 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
 
     if local_frames:
         wdf = pd.concat(local_frames, ignore_index=True)
-        wdf["window_end"] = pd.to_datetime(wdf["window_end"], utc=True).dt.floor("us")
         log.info(f"[WEATHER] Loaded {len(local_frames)} local parquet file(s) for {slot_end}")
         return wdf
 
     # 3. CSV fallback
     if os.path.exists(WEATHER_CSV):
         log.warning("[WEATHER] Parquet not found — CSV fallback")
-        wdf = pd.read_csv(WEATHER_CSV, parse_dates=["window_end"])
-        wdf["window_end"] = pd.to_datetime(wdf["window_end"], utc=True).dt.floor("us")
+        wdf = _normalize_weather_frame(pd.read_csv(WEATHER_CSV), WEATHER_CSV)
+        if wdf.empty:
+            return wdf
         return wdf[wdf["window_end"].dt.strftime("%Y-%m-%d").isin(needed)]
 
     log.warning("[WEATHER] No weather data found (S3, local parquet, or CSV) — running without weather features")
@@ -790,6 +855,17 @@ class ModelCache:
         return self._shadow_a  # alias dùng trong _predict_slot
 
 
+def _predict_proba(model, x):
+    if hasattr(model, "predict_proba"):
+        proba = model.predict_proba(x)
+    else:
+        proba = model.predict(x)
+    proba = np.asarray(proba)
+    if proba.ndim == 2:
+        proba = proba[0]
+    return proba.astype(float)
+
+
 # ── Predict 1 slot → upsert PG ────────────────────────────────────────────────
 def _predict_slot(
     slot_end, cur_df, l92_df, l668_df, weather_df, cache: ModelCache
@@ -828,11 +904,11 @@ def _predict_slot(
 
         if cache.model_a and has_wx:
             x = row[ALL_FEATURE_COLS].values.reshape(1, -1)
-            proba = cache.model_a.predict_proba(x)[0]
+            proba = _predict_proba(cache.model_a, x)
             pred, used, m_ver = int(np.argmax(proba)), "model_a", cache.ver_a
         elif cache.model_b:
             x = row[NO_WEATHER_FEATURE_COLS].values.reshape(1, -1)
-            proba = cache.model_b.predict_proba(x)[0]
+            proba = _predict_proba(cache.model_b, x)
             pred, used, m_ver = int(np.argmax(proba)), "model_b", cache.ver_b
         else:
             skipped += 1
@@ -841,9 +917,9 @@ def _predict_slot(
         shadow_pred, shadow_proba = None, [None] * 6
         if cache.shadow and has_wx:
             try:
-                sp = cache.shadow.predict_proba(
-                    row[ALL_FEATURE_COLS].values.reshape(1, -1)
-                )[0]
+                sp = _predict_proba(
+                    cache.shadow, row[ALL_FEATURE_COLS].values.reshape(1, -1)
+                )
                 shadow_pred = int(np.argmax(sp))
                 shadow_proba = sp.tolist()
             except Exception:
@@ -970,12 +1046,58 @@ def main():
                     cur_df["window_end"], utc=True
                 ).dt.floor("us")
                 slot_end = _normalize_timestamp_utc(cur_df["window_end"].iloc[0])
+                source_zone_count = (
+                    int(cur_df["zone_id"].nunique())
+                    if "zone_id" in cur_df.columns
+                    else len(cur_df)
+                )
 
-                if last_slot is not None and slot_end <= last_slot:
+                if last_slot is not None and slot_end < last_slot:
                     # Gold chưa có slot mới, Spark chưa trigger xong
-                    log.debug(f"[LOOP] slot {slot_end} already predicted, skip")
+                    log.debug(
+                        f"[LOOP] slot {slot_end} older than last predicted {last_slot}, skip"
+                    )
                 else:
-                    # 4. Slot mới → predict ngay
+                    predicted_count, last_written = _get_prediction_summary(slot_end)
+                    should_predict = last_slot is None or slot_end > last_slot
+                    reason = "new_slot" if should_predict else "same_slot"
+
+                    if not should_predict:
+                        if predicted_count < source_zone_count:
+                            should_predict = True
+                            reason = (
+                                "same_slot_more_gold_zones "
+                                f"{predicted_count}->{source_zone_count}"
+                            )
+                        elif (
+                            REPROCESS_CURRENT_SLOT_INTERVAL > 0
+                            and last_written is not None
+                        ):
+                            now_utc = _normalize_timestamp_utc(pd.Timestamp.utcnow())
+                            age_s = (now_utc - last_written).total_seconds()
+                            if age_s >= REPROCESS_CURRENT_SLOT_INTERVAL:
+                                should_predict = True
+                                reason = f"same_slot_refresh age_s={age_s:.0f}"
+
+                    if not should_predict:
+                        log.debug(
+                            "[LOOP] slot %s already predicted, skip | "
+                            "gold_zones=%s pg_zones=%s",
+                            slot_end,
+                            source_zone_count,
+                            predicted_count,
+                        )
+                        continue
+
+                    log.info(
+                        "[LOOP] predict slot=%s reason=%s gold_zones=%s pg_zones=%s",
+                        slot_end,
+                        reason,
+                        source_zone_count,
+                        predicted_count,
+                    )
+
+                    # 4. Slot mới hoặc cùng slot có thêm zone → predict ngay
                     weather_df = _load_weather(slot_end)
                     n = _predict_slot(
                         slot_end, cur_df, l92_df, l668_df, weather_df, cache

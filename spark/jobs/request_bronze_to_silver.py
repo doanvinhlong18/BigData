@@ -21,9 +21,11 @@ MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 BRONZE_REQUEST = "s3a://bronze/request"
 SILVER_REQUEST = "s3a://silver/request"
 CHECKPOINT = "s3a://checkpoints/silver/request"
+SOURCE_WAIT_POLL_S = int(os.getenv("SOURCE_WAIT_POLL_S", "15"))
+SOURCE_WAIT_TIMEOUT_S = int(os.getenv("SOURCE_WAIT_TIMEOUT_S", "1800"))
 
 
-def wait_for_source(spark, path, timeout=600):
+def wait_for_source(spark, path, timeout=SOURCE_WAIT_TIMEOUT_S):
     """Chờ Delta table tồn tại trước khi readStream.
     Dùng DeltaTable.isDeltaTable() thay vì spark.read — trả về True/False,
     không throw exception khi table chưa tồn tại."""
@@ -36,8 +38,8 @@ def wait_for_source(spark, path, timeout=600):
                 return
         except Exception as e:
             print(f"[wait_for_source]   ⚠️  check error: {e}", flush=True)
-        time.sleep(10)
-        elapsed += 10
+        time.sleep(SOURCE_WAIT_POLL_S)
+        elapsed += SOURCE_WAIT_POLL_S
         print(f"[wait_for_source]   ... {path} chưa sẵn sàng ({elapsed}s)", flush=True)
     raise TimeoutError(f"Source {path} không xuất hiện sau {timeout}s")
 
