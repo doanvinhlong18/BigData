@@ -594,7 +594,7 @@
                    },
                    {
                        "id":  13,
-                       "title":  "Model Loaded",
+                       "title":  "Prod Models Loaded",
                        "type":  "stat",
                        "gridPos":  {
                                        "x":  21,
@@ -612,8 +612,8 @@
                                                               "type":  "prometheus",
                                                               "uid":  "Prometheus"
                                                           },
-                                           "expr":  "predict_service_model_loaded",
-                                           "legendFormat":  "Model",
+                                           "expr":  "sum(predict_service_model_loaded{stage=\"Production\"})",
+                                           "legendFormat":  "loaded production models",
                                            "refId":  "A"
                                        }
                                    ],
@@ -635,10 +635,14 @@
                                                                                                  "value":  null,
                                                                                                  "color":  "red"
                                                                                              },
-                                                                                             {
-                                                                                                 "value":  1,
-                                                                                                 "color":  "green"
-                                                                                             }
+                                                                                              {
+                                                                                                  "value":  1,
+                                                                                                  "color":  "yellow"
+                                                                                              },
+                                                                                              {
+                                                                                                  "value":  2,
+                                                                                                  "color":  "green"
+                                                                                              }
                                                                                          ]
                                                                            },
                                                             "color":  {
@@ -648,21 +652,26 @@
                                                                              {
                                                                                  "type":  "value",
                                                                                  "options":  {
-                                                                                                 "1":  {
-                                                                                                           "text":  "LOADED",
-                                                                                                           "color":  "green",
-                                                                                                           "index":  0
-                                                                                                       }
+                                                                                                  "2":  {
+                                                                                                            "text":  "2/2",
+                                                                                                            "color":  "green",
+                                                                                                            "index":  0
+                                                                                                        }
                                                                                              }
                                                                              },
                                                                              {
                                                                                  "type":  "value",
                                                                                  "options":  {
-                                                                                                 "0":  {
-                                                                                                           "text":  "NOT LOADED",
-                                                                                                           "color":  "red",
-                                                                                                           "index":  1
-                                                                                                       }
+                                                                                                  "0":  {
+                                                                                                            "text":  "0/2",
+                                                                                                            "color":  "red",
+                                                                                                            "index":  1
+                                                                                                        },
+                                                                                                  "1":  {
+                                                                                                            "text":  "1/2",
+                                                                                                            "color":  "yellow",
+                                                                                                            "index":  2
+                                                                                                        }
                                                                                              }
                                                                              }
                                                                          ]
@@ -743,7 +752,7 @@
                    },
                    {
                        "id":  21,
-                       "title":  "Kafka Bytes In/Out per sec",
+                       "title":  "Worker Host RAM Used %",
                        "type":  "timeseries",
                        "gridPos":  {
                                        "x":  6,
@@ -761,18 +770,9 @@
                                                               "type":  "prometheus",
                                                               "uid":  "Prometheus"
                                                           },
-                                           "expr":  "kafka_server_brokertopicmetrics_bytesin_rate1m{topic=\"nyc_taxi_events\"}",
-                                           "legendFormat":  "Bytes In",
+                                           "expr":  "100 * (1 - node_memory_MemAvailable_bytes{job=\"node-exporter-worker\"} / node_memory_MemTotal_bytes{job=\"node-exporter-worker\"})",
+                                           "legendFormat":  "{{machine}} host RAM used",
                                            "refId":  "A"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "Prometheus"
-                                                          },
-                                           "expr":  "kafka_server_brokertopicmetrics_bytesout_rate1m{topic=\"nyc_taxi_events\"}",
-                                           "legendFormat":  "Bytes Out",
-                                           "refId":  "B"
                                        }
                                    ],
                        "options":  {
@@ -786,7 +786,27 @@
                                    },
                        "fieldConfig":  {
                                            "defaults":  {
-                                                            "unit":  "Bps",
+                                                            "unit":  "percent",
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             },
+                                                                                             {
+                                                                                                 "value":  70,
+                                                                                                 "color":  "yellow"
+                                                                                             },
+                                                                                             {
+                                                                                                 "value":  85,
+                                                                                                 "color":  "red"
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
                                                             "custom":  {
                                                                            "lineWidth":  2,
                                                                            "fillOpacity":  10,
@@ -801,8 +821,9 @@
                                                         },
                                            "overrides":  [
 
-                                                         ]
-                                       }
+                                                          ]
+                                       },
+                       "description":  "Tỷ lệ RAM thật đang dùng trên worker host; hữu ích để biết cấu hình 13GB Spark worker còn headroom hay không."
                    },
                    {
                        "id":  70,
@@ -824,8 +845,8 @@
                                                               "type":  "prometheus",
                                                               "uid":  "Prometheus"
                                                           },
-                                           "expr":  "sum by (job, query) (nyc_spark_stream_active)",
-                                           "legendFormat":  "{{job}} / {{query}}",
+                                           "expr":  "sum by (job_name, query) (nyc_spark_stream_active)",
+                                           "legendFormat":  "{{job_name}} / {{query}}",
                                            "refId":  "A"
                                        }
                                    ],
@@ -981,8 +1002,8 @@
                                                               "type":  "prometheus",
                                                               "uid":  "Prometheus"
                                                           },
-                                           "expr":  "sum by (job, query) (nyc_spark_stream_input_rows_per_second)",
-                                           "legendFormat":  "{{job}} / {{query}}",
+                                           "expr":  "sum by (job_name, query) (nyc_spark_stream_input_rows_per_second)",
+                                           "legendFormat":  "{{job_name}} / {{query}}",
                                            "refId":  "A"
                                        }
                                    ],
@@ -1036,8 +1057,8 @@
                                                               "type":  "prometheus",
                                                               "uid":  "Prometheus"
                                                           },
-                                           "expr":  "sum by (job, query) (nyc_spark_stream_processed_rows_per_second)",
-                                           "legendFormat":  "{{job}} / {{query}}",
+                                           "expr":  "sum by (job_name, query) (nyc_spark_stream_processed_rows_per_second)",
+                                           "legendFormat":  "{{job_name}} / {{query}}",
                                            "refId":  "A"
                                        }
                                    ],
@@ -1091,8 +1112,8 @@
                                                               "type":  "prometheus",
                                                               "uid":  "Prometheus"
                                                           },
-                                           "expr":  "sum by (job, query) (nyc_spark_stream_input_rows)",
-                                           "legendFormat":  "{{job}} / {{query}}",
+                                           "expr":  "sum by (job_name, query) (nyc_spark_stream_input_rows)",
+                                           "legendFormat":  "{{job_name}} / {{query}}",
                                            "refId":  "A"
                                        }
                                    ],
@@ -1146,8 +1167,8 @@
                                                               "type":  "prometheus",
                                                               "uid":  "Prometheus"
                                                           },
-                                           "expr":  "sum by (job, query) (nyc_spark_stream_batch_duration_ms)",
-                                           "legendFormat":  "{{job}} / {{query}}",
+                                           "expr":  "sum by (job_name, query) (nyc_spark_stream_batch_duration_ms)",
+                                           "legendFormat":  "{{job_name}} / {{query}}",
                                            "refId":  "A"
                                        }
                                    ],
@@ -1209,7 +1230,7 @@
                    },
                    {
                        "id":  74,
-                       "title":  "Operation Duration by Job",
+                       "title":  "Last Progress Age by Job",
                        "type":  "timeseries",
                        "gridPos":  {
                                        "x":  8,
@@ -1227,8 +1248,8 @@
                                                               "type":  "prometheus",
                                                               "uid":  "Prometheus"
                                                           },
-                                           "expr":  "sum by (job, query, operation) (nyc_spark_stream_operation_duration_ms)",
-                                           "legendFormat":  "{{job}} / {{query}} / {{operation}}",
+                                           "expr":  "(time() - nyc_spark_stream_last_progress_timestamp) unless nyc_spark_stream_last_progress_timestamp == 0",
+                                           "legendFormat":  "{{job_name}} / {{query}}",
                                            "refId":  "A"
                                        }
                                    ],
@@ -1243,7 +1264,27 @@
                                    },
                        "fieldConfig":  {
                                            "defaults":  {
-                                                            "unit":  "ms",
+                                                            "unit":  "s",
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             },
+                                                                                             {
+                                                                                                 "value":  90,
+                                                                                                 "color":  "yellow"
+                                                                                             },
+                                                                                             {
+                                                                                                 "value":  180,
+                                                                                                 "color":  "red"
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
                                                             "custom":  {
                                                                            "lineWidth":  2,
                                                                            "fillOpacity":  10,
@@ -1272,11 +1313,11 @@
                                                                                                                         "color":  "green"
                                                                                                                     },
                                                                                                                     {
-                                                                                                                        "value":  60000,
+                                                                                                                        "value":  90,
                                                                                                                         "color":  "yellow"
                                                                                                                     },
                                                                                                                     {
-                                                                                                                        "value":  120000,
+                                                                                                                        "value":  180,
                                                                                                                         "color":  "red"
                                                                                                                     }
                                                                                                                 ]
@@ -1286,7 +1327,7 @@
                                                              }
                                                          ]
                                        },
-                       "description":  "Chi tiết durationMs theo operation như getOffset, addBatch, walCommit."
+                       "description":  "Số giây kể từ lần Structured Streaming query có lastProgress gần nhất; tăng cao nghĩa là job bị kẹt hoặc không còn batch mới."
                    },
                    {
                        "id":  34,
@@ -1308,8 +1349,8 @@
                                                               "type":  "prometheus",
                                                               "uid":  "Prometheus"
                                                           },
-                                           "expr":  "sum by (job, query) (nyc_spark_stream_state_rows_total)",
-                                           "legendFormat":  "{{job}} / {{query}}",
+                                           "expr":  "sum by (job_name, query) (nyc_spark_stream_state_rows_total)",
+                                           "legendFormat":  "{{job_name}} / {{query}}",
                                            "refId":  "A"
                                        }
                                    ],

@@ -52,7 +52,21 @@ METRIC_ZONES_PREDICTED = Gauge(
 )
 METRIC_MODEL_LOADED = Gauge(
     "predict_service_model_loaded",
-    "1 nếu ít nhất 1 model (a hoặc b) đang được load",
+    "1 nếu model/stage tương ứng đang được load",
+    ["model", "stage"],
+)
+METRIC_MODEL_READY = Gauge(
+    "predict_service_model_ready",
+    "1 nếu predict_service có ít nhất một Production model để inference",
+)
+METRIC_MODELS_LOADED_TOTAL = Gauge(
+    "predict_service_models_loaded_total",
+    "Số Production models đang được load",
+)
+METRIC_MODEL_VERSION = Gauge(
+    "predict_service_model_version",
+    "MLflow model version đang được load, 0 nếu chưa load",
+    ["model", "stage"],
 )
 
 # ── Startup validation: feature_builder phải có trước khi import ──────────────
@@ -534,6 +548,36 @@ class ModelCache:
         self._last_load = 0.0
         mlflow.set_tracking_uri(MLFLOW_URI)
         self._client = mlflow.tracking.MlflowClient()
+        self._publish_metrics()
+
+    @staticmethod
+    def _version_metric(version) -> float:
+        try:
+            return float(version)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _publish_metrics(self):
+        prod_a_loaded = 1.0 if self._model_a else 0.0
+        prod_b_loaded = 1.0 if self._model_b else 0.0
+        shadow_a_loaded = 1.0 if self._shadow_a else 0.0
+
+        METRIC_MODEL_LOADED.labels("model_a", "Production").set(prod_a_loaded)
+        METRIC_MODEL_LOADED.labels("model_b", "Production").set(prod_b_loaded)
+        METRIC_MODEL_LOADED.labels("model_a", "Staging").set(shadow_a_loaded)
+
+        METRIC_MODEL_VERSION.labels("model_a", "Production").set(
+            self._version_metric(self._ver_a)
+        )
+        METRIC_MODEL_VERSION.labels("model_b", "Production").set(
+            self._version_metric(self._ver_b)
+        )
+        METRIC_MODEL_VERSION.labels("model_a", "Staging").set(
+            self._version_metric(self._shadow_a_ver)
+        )
+
+        METRIC_MODELS_LOADED_TOTAL.set(prod_a_loaded + prod_b_loaded)
+        METRIC_MODEL_READY.set(1.0 if (self._model_a or self._model_b) else 0.0)
 
     def _load_one(self, name: str, stage: str = "Production"):
         try:
@@ -566,7 +610,7 @@ class ModelCache:
             f"model_b={'OK v'+str(self._ver_b) if self._model_b else 'NONE'} "
             f"shadow_a={'OK v'+str(self._shadow_a_ver) if self._shadow_a else 'NONE'}"
         )
-        METRIC_MODEL_LOADED.set(1.0 if (self._model_a or self._model_b) else 0.0)
+        self._publish_metrics()
 
     @property
     def model_a(self):
@@ -761,9 +805,7 @@ def main():
                     if n > 0:
                         METRIC_LAST_PRED_TS.set(time.time())
                         METRIC_ZONES_PREDICTED.set(n)
-                    METRIC_MODEL_LOADED.set(
-                        1.0 if (cache.model_a or cache.model_b) else 0.0
-                    )
+                    cache._publish_metrics()
 
         except Exception as e:
             log.error(f"[LOOP] unexpected error: {e}", exc_info=True)

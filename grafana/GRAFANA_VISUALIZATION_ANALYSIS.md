@@ -10,14 +10,14 @@ Ngày rà soát: 31/05/2026.
 
 ## Dashboard Demand Forecast
 
-Map đã chuyển sang layer `Dynamic GeoJSON` để tự cập nhật màu theo query Postgres mỗi lần dashboard refresh.
+Map đã chuyển sang layer `Dynamic GeoJSON` để tự cập nhật màu theo query Postgres mỗi lần dashboard refresh. Basemap được đổi sang nền đen, tắt label nền, để các polygon NYC Taxi Zone và thang màu demand nổi rõ hơn.
 
 Nguồn geometry vẫn là `http://localhost:8002/zone-predictions.geojson`, nhưng màu chính không còn phụ thuộc vào static style trong GeoJSON. Dashboard query latest prediction từ bảng `predictions_monitoring`, rồi layer `Dynamic GeoJSON` map `zone_id` trong query với `feature.id` trong GeoJSON.
 
 Lỗi map "tối om" sau khi sửa lần đầu có 2 nguyên nhân:
 
 - Container `predict-service` vẫn đang chạy cấu hình cũ, chưa publish port `8002` ra host và chưa có env `GEOJSON_PORT`. Trình duyệt không tải được `zone-predictions.geojson`, nên Geomap chỉ còn nền mặc định theo dark theme.
-- Dashboard dùng các field style cũ như `fillColor`, `strokeColor`, `strokeWidth`. Với static GeoJSON layer của Grafana hiện tại, các field chắc chắn được dùng là `style.color`, `opacity`, `lineWidth` và `rules` theo feature property. Sau đó map được đổi tiếp sang `Dynamic GeoJSON` để màu tự refresh theo query Postgres, ép basemap sáng và thêm layer viền trắng để từng TLC zone nhìn rõ hơn.
+- Dashboard dùng các field style cũ như `fillColor`, `strokeColor`, `strokeWidth`. Với static GeoJSON layer của Grafana hiện tại, các field chắc chắn được dùng là `style.color`, `opacity`, `lineWidth` và `rules` theo feature property. Sau đó map được đổi tiếp sang `Dynamic GeoJSON` để màu tự refresh theo query Postgres, dùng nền đen và thêm layer viền trắng để từng TLC zone nhìn rõ hơn.
 
 Endpoint này được predict service phục vụ bằng cách đọc `nyc_taxi_zones.geojson`, gán `feature.id = LocationID`, lấy latest prediction từ bảng `predictions_monitoring`, rồi ghi prediction vào `properties` của từng feature.
 
@@ -46,6 +46,8 @@ Cơ chế tự cập nhật:
 - `Dynamic GeoJSON` dùng `zone_id` từ query để tìm đúng `feature.id` trong GeoJSON và đổi màu polygon.
 - Endpoint GeoJSON vẫn có `Cache-Control: no-store`, nhưng geometry chủ yếu dùng làm nền không gian; màu prediction lấy từ query nên không cần reload toàn bộ trang.
 - Query map có thêm một `Seed row` với `zone_id = -1` để tránh lỗi index `0` của plugin `Dynamic GeoJSON` không được style. Row này không khớp với feature nào nên không hiển thị trên bản đồ.
+
+Lưu ý runtime lúc kiểm tra ngày 31/05/2026: bảng `predictions_monitoring` trong database `bigdata` đang có `0` dòng, nên map chỉ có nền đen và zone màu mặc định cho tới khi pipeline ghi lại prediction mới. Đây là vấn đề dữ liệu/model runtime, không phải lỗi style của map.
 
 Các panel được giữ:
 
@@ -77,13 +79,13 @@ Các health panel được giữ:
 - `MinIO`: nơi lưu bronze/silver/gold/checkpoints.
 - `Postgres`: nơi dashboard forecast đọc prediction.
 - `Predict Svc`: service ghi prediction vào Postgres.
-- `Model Loaded`: xác nhận predict service đã load model.
+- `Prod Models Loaded`: đếm số Production model đang được predict service load. Giá trị kỳ vọng là `2/2` vì pipeline đang dùng cả `model_a` và `model_b`; `1/2` nghĩa là chỉ một nhánh inference sẵn sàng, `0/2` nghĩa là service chưa có model để predict.
 
 Các panel Kafka ingress:
 
 - `Kafka Messages In/sec`: tốc độ message vào topic `nyc_taxi_events`.
-- `Kafka Bytes In/Out per sec`: lưu lượng byte vào/ra topic.
-- `Active Streaming Queries`: tổng số Structured Streaming query đang active theo `job/query`.
+- `Worker Host RAM Used %`: tỷ lệ RAM thật của worker host đang dùng, lấy từ node-exporter bằng `MemAvailable/MemTotal`. Metric này có ý nghĩa trực tiếp sau khi worker nâng lên 13GB vì cho biết cấu hình Spark còn headroom hay đã chạm vùng rủi ro.
+- `Active Streaming Queries`: tổng số Structured Streaming query đang active theo `job_name/query`.
 - `Prediction Freshness`: số phút từ lần predict gần nhất.
 
 Các panel Structured Streaming giống Spark UI `4040`:
@@ -92,7 +94,7 @@ Các panel Structured Streaming giống Spark UI `4040`:
 - `Process Rate by Job`: lấy từ `nyc_spark_stream_processed_rows_per_second`, tương đương Process Rate; dùng làm proxy throughput/output.
 - `Input Rows per Batch`: lấy từ `nyc_spark_stream_input_rows`, số rows trong trigger gần nhất.
 - `Batch Duration by Job`: lấy từ `nyc_spark_stream_batch_duration_ms`, tương đương `triggerExecution`.
-- `Operation Duration by Job`: lấy từ `nyc_spark_stream_operation_duration_ms`, chi tiết các operation như `getOffset`, `addBatch`, `walCommit`.
+- `Last Progress Age by Job`: lấy từ `nyc_spark_stream_last_progress_timestamp`, cho biết mỗi job đã bao lâu chưa có `lastProgress`. Đây là tín hiệu dễ đọc hơn operation duration: nếu tăng cao, job có thể đang kẹt, hết input hoặc exporter không cập nhật.
 - `State Rows / Backlog`: lấy từ `nyc_spark_stream_state_rows_total`, hữu ích cho các job stream-stream join có state.
 
 Các panel prediction output:
@@ -103,10 +105,44 @@ Các panel đã bỏ:
 
 - `MLflow`: `Model Loaded` trực tiếp hơn cho dashboard demo.
 - `Airflow`: service Airflow đang bị comment trong compose và không đo streaming throughput.
+- `Kafka Bytes In/Out per sec`: byte rate dễ bị trùng ý nghĩa với `Kafka Messages In/sec`, nhưng khó trả lời câu hỏi nghiệp vụ "pipeline đang nhận bao nhiêu event". Giữ message rate sẽ trực tiếp và dễ đọc hơn.
+- `Operation Duration by Job`: quá nhiều series theo operation như `getOffset`, `addBatch`, `walCommit`; hữu ích khi debug Spark sâu nhưng rối cho dashboard tổng quan. Thay bằng `Last Progress Age by Job` để nhận biết job kẹt nhanh hơn.
 - `Kafka Log End Offset`, `Kafka Request Latency p99`, `Kafka Log Size`, `Kafka JVM Heap Usage`: hữu ích khi debug Kafka sâu nhưng không kể câu chuyện input/output của pipeline.
 - `Spark Driver Heap Usage`: resource metric chung, không giống Structured Streaming tab.
 - `Host Resources`, `Container CPU/RAM`, `Network`, `Disk I/O`: nên để dashboard ops riêng nếu cần.
 - `MinIO Storage Used`: MinIO health đủ cho demo pipeline; dung lượng storage không nói lên tốc độ job.
+
+## Chia Lại Tài Nguyên Worker 13GB
+
+Worker Spark hiện được cấu hình `SPARK_WORKER_MEMORY=13g` và `SPARK_WORKER_CORES=10`. Mục tiêu là dùng đủ 10 cores nhưng vẫn để khoảng 512MB buffer trong Spark worker container.
+
+Phân bổ mới:
+
+- `kafka_to_bronze`: `2048m + 384m overhead`, `2 cores`. Job này ingest trực tiếp từ Kafka và ghi nhiều nhánh bronze nên cần RAM/CPU hơn trước.
+- `request_bronze_to_silver`: `768m + 256m overhead`, `1 core`. Job nhẹ, không join stateful nên giữ nhỏ để nhường tài nguyên.
+- `request_to_response_silver`: `1280m + 384m overhead`, `2 cores`. Có stream-stream join nhỏ nên tăng core và shuffle partition để giảm nghẽn.
+- `complete_bronze_to_silver`: `3072m + 512m overhead`, `3 cores`. Đây là job stateful nặng nhất nên được ưu tiên nhiều tài nguyên nhất.
+- `silver_to_gold`: `3584m + 512m overhead`, `2 cores`. Job đọc silver/response và ghi gold/prediction, cần storage pool lớn nên giữ `spark.memory.storageFraction=0.5`.
+
+Tổng executor slot là `12.5GB` và `10/10 cores`. Cấu hình này tận dụng worker mới tốt hơn cấu hình cũ `10.5GB`, nhưng vẫn không vượt `13GB`.
+
+## Metric Model Loaded
+
+Metric cũ `predict_service_model_loaded` chỉ có một giá trị `0/1`, nên dashboard không biết đang load được model nào. Predict service hiện export metric theo label:
+
+- `predict_service_model_loaded{model="model_a", stage="Production"}`
+- `predict_service_model_loaded{model="model_b", stage="Production"}`
+- `predict_service_model_loaded{model="model_a", stage="Staging"}`
+
+Dashboard dùng `sum(predict_service_model_loaded{stage="Production"})` để hiển thị `0/2`, `1/2`, hoặc `2/2`. Cách này có ý nghĩa hơn vì cho biết trạng thái ensemble Production, không chỉ biết "có ít nhất một model".
+
+Các metric hỗ trợ thêm:
+
+- `predict_service_model_ready`: `1` nếu có ít nhất một Production model để inference.
+- `predict_service_models_loaded_total`: số Production model đang load.
+- `predict_service_model_version{model, stage}`: version MLflow đang load, `0` nếu chưa load.
+
+Lưu ý runtime lúc kiểm tra ngày 31/05/2026: metric đang trả `0/2` vì `predict-service` load MLflow model bị lỗi artifact `404 Not Found` ở các đường dẫn `s3://mlflow-artifacts/.../artifacts/model`. Kiểm tra MinIO cho thấy bucket `mlflow-artifacts` hiện không có object trong prefix `1/`. Khi artifact trên MinIO được khôi phục hoặc model được train/register lại, panel sẽ tự chuyển sang `1/2` hoặc `2/2` sau lần scrape tiếp theo của Prometheus.
 
 ## Custom Metrics Mới
 

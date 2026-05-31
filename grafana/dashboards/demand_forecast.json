@@ -394,10 +394,10 @@
                                        "layers":  [
                                                        {
                                                            "type":  "carto",
-                                                           "name":  "Light basemap",
+                                                           "name":  "Black basemap",
                                                            "config":  {
-                                                                          "theme":  "light",
-                                                                          "showLabels":  true
+                                                                          "theme":  "dark",
+                                                                          "showLabels":  false
                                                                       }
                                                        },
                                                        {
@@ -449,10 +449,10 @@
                                                    ],
                                         "basemap":  {
                                                         "config":  {
-                                                                       "theme":  "light",
-                                                                       "showLabels":  true
+                                                                       "theme":  "dark",
+                                                                       "showLabels":  false
                                                                    },
-                                                        "name":  "Light basemap",
+                                                        "name":  "Black basemap",
                                                         "type":  "carto"
                                                     },
                                        "legend":  {
