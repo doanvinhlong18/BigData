@@ -141,7 +141,11 @@ services:
   # ── SPARK WORKER ───────────────────────────────────────────────
   # Kafka + MinIO cùng máy → executor đọc/ghi KHÔNG qua mạng ✅
   spark-worker:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
     image: bigdata-spark:latest
+    pull_policy: build
     container_name: ${SPARK_WORKER_HOST:-spark-worker-A}
     hostname: ${SPARK_WORKER_HOST:-spark-worker-A}
     restart: unless-stopped
