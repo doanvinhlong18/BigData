@@ -103,6 +103,7 @@ services:
       - "8080:8080"
       - "4040-4050:4040-4050"
       - "4100-4120:4100-4120"
+      - "9101-9105:9101-9105"
       - "7337-7360:7337-7360"
     volumes:
       - ./spark/jobs:/opt/spark/app/spark/jobs
@@ -253,6 +254,8 @@ services:
       POLL_INTERVAL_S: ${POLL_INTERVAL_S:-300}
       EMPTY_RETRY_INTERVAL_S: ${PREDICT_EMPTY_RETRY_INTERVAL_S:-60}
       MODEL_RELOAD_INTERVAL_S: ${MODEL_RELOAD_INTERVAL_S:-1800}
+      GEOJSON_PORT: "8002"
+      ZONES_GEOJSON_PATH: /app/nyc_taxi_zones.geojson
       <<: *minio-env
     extra_hosts:
       - "minio:${WORKER_IP}"
@@ -260,6 +263,9 @@ services:
     volumes:
       - ./ml:/opt/ml:ro
       - ${DATASET_PATH}:/datasets:ro
+      - ./grafana/dashboards/nyc_taxi_zones.geojson:/app/nyc_taxi_zones.geojson:ro
+    ports:
+      - "8002:8002"
 
   # ── MLFLOW ─────────────────────────────────────────────────────
   mlflow:

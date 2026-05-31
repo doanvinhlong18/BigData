@@ -1,0 +1,125 @@
+# Phân tích và tinh gọn dashboard Grafana NYC Taxi
+
+Ngày rà soát: 31/05/2026.
+
+## Vấn đề đã phát hiện
+
+- Zone map bị trắng dù Postgres có dữ liệu vì panel đang dùng static GeoJSON layer. Static GeoJSON của Grafana style chắc nhất theo `properties` nằm trong chính GeoJSON, còn dữ liệu prediction lại nằm ở query Postgres riêng. Cách join động `zone_id -> LocationID` không đáng tin cậy nếu không dùng Dynamic GeoJSON alpha.
+- Grafana vẫn còn 5 dashboard vì SQLite volume của Grafana đang giữ 3 dashboard cũ: `Grafana metrics`, `Prometheus 2.0 Stats`, `Prometheus Stats`. Các dashboard này không nằm trong `grafana/dashboards`, nên sửa provisioning file không tự xóa chúng.
+- Dashboard infrastructure không hiện rõ từng streaming job vì Spark jobs trước đó chưa có `.queryName(...)` và chưa export `StreamingQuery.lastProgress`. Metric Spark thô có tên khó đọc và không giống tab Structured Streaming ở Spark UI `4040`.
+
+## Dashboard Demand Forecast
+
+Map đã chuyển sang nguồn GeoJSON động: `http://localhost:8002/zone-predictions.geojson`.
+
+Lỗi map "tối om" sau khi sửa lần đầu có 2 nguyên nhân:
+
+- Container `predict-service` vẫn đang chạy cấu hình cũ, chưa publish port `8002` ra host và chưa có env `GEOJSON_PORT`. Trình duyệt không tải được `zone-predictions.geojson`, nên Geomap chỉ còn nền mặc định theo dark theme.
+- Dashboard dùng các field style cũ như `fillColor`, `strokeColor`, `strokeWidth`. Với static GeoJSON layer của Grafana hiện tại, các field chắc chắn được dùng là `style.color`, `opacity`, `lineWidth` và `rules` theo feature property. Vì vậy map đã được đổi sang `rules` theo `predicted_class`, ép basemap sáng và thêm layer viền trắng để từng TLC zone nhìn rõ hơn.
+
+Endpoint này được predict service phục vụ bằng cách đọc `nyc_taxi_zones.geojson`, lấy latest prediction từ bảng `predictions_monitoring`, rồi ghi prediction vào `properties` của từng feature.
+
+Mỗi zone có các property chính:
+
+- `predicted_class`: cấp demand từ `0` đến `5`.
+- `demand_label`: nhãn dễ đọc như `1 - Rất thấp`, `5 - Rất cao`.
+- `confidence`: độ tự tin của model.
+- `model`, `model_version`, `window_end`: metadata prediction.
+- `fill`, `fill-opacity`, `stroke`, `stroke-width`: style tham khảo/debug nằm trong GeoJSON.
+
+Grafana hiện tô màu polygon bằng `rules` trên `predicted_class`:
+
+- Rule `predicted_class = 0`: xám rất nhạt.
+- Rule `predicted_class = 1`: xanh nhạt.
+- Rule `predicted_class = 2`: xanh rõ.
+- Rule `predicted_class = 3`: vàng.
+- Rule `predicted_class = 4`: cam.
+- Rule `predicted_class = 5`: đỏ đậm.
+- Zone không có prediction: dùng default style xám, opacity thấp.
+
+Các panel được giữ:
+
+- `NYC Demand Forecast - Latest Zone Heatmap`: panel chính, trả lời trực tiếp model dự đoán demand ở từng địa điểm như thế nào.
+- `Latest Event Window`: tránh nhầm event-time replay với wall-clock hiện tại.
+- `Zones Covered`: số zone có prediction trong latest window.
+- `Missing Zones`: số zone chưa có prediction, tính theo tổng `263` zone.
+- `Average Confidence`: confidence trung bình của model.
+- `Peak Demand Level`: mức demand cao nhất trong latest window.
+- `Demand Distribution - Latest Window`: phân phối số zone theo demand class.
+- `Demand Level Trend - Last 24h Event Time`: xu hướng theo event-time, không dùng `$__timeFilter(window_end)`.
+- `Top Demand Zones - Latest Window`: danh sách vùng đáng chú ý nhất.
+
+Các panel đã bỏ:
+
+- `Model A / B Split`: latest window hiện chỉ có một model nên pie chart không có thêm insight.
+- `All 263 Zones - Avg Demand (24h)`: bảng quá dài, không phù hợp demo và dễ gây hiểu nhầm giữa event-time với wall-clock.
+
+## Dashboard Infrastructure & Pipeline Monitoring
+
+Dashboard mới ưu tiên luồng vận hành: Kafka ingress -> Structured Streaming metrics -> prediction output.
+
+Các health panel được giữ:
+
+- `Kafka`: nguồn vào chính của pipeline.
+- `Spark Master`: điều phối Spark applications.
+- `Spark Workers`: số worker còn sống.
+- `Spark Apps`: số app đang chạy.
+- `MinIO`: nơi lưu bronze/silver/gold/checkpoints.
+- `Postgres`: nơi dashboard forecast đọc prediction.
+- `Predict Svc`: service ghi prediction vào Postgres.
+- `Model Loaded`: xác nhận predict service đã load model.
+
+Các panel Kafka ingress:
+
+- `Kafka Messages In/sec`: tốc độ message vào topic `nyc_taxi_events`.
+- `Kafka Bytes In/Out per sec`: lưu lượng byte vào/ra topic.
+- `Active Streaming Queries`: tổng số Structured Streaming query đang active theo `job/query`.
+- `Prediction Freshness`: số phút từ lần predict gần nhất.
+
+Các panel Structured Streaming giống Spark UI `4040`:
+
+- `Input Rate by Job`: lấy từ `nyc_spark_stream_input_rows_per_second`, tương đương Input Rate trong Spark UI.
+- `Process Rate by Job`: lấy từ `nyc_spark_stream_processed_rows_per_second`, tương đương Process Rate; dùng làm proxy throughput/output.
+- `Input Rows per Batch`: lấy từ `nyc_spark_stream_input_rows`, số rows trong trigger gần nhất.
+- `Batch Duration by Job`: lấy từ `nyc_spark_stream_batch_duration_ms`, tương đương `triggerExecution`.
+- `Operation Duration by Job`: lấy từ `nyc_spark_stream_operation_duration_ms`, chi tiết các operation như `getOffset`, `addBatch`, `walCommit`.
+- `State Rows / Backlog`: lấy từ `nyc_spark_stream_state_rows_total`, hữu ích cho các job stream-stream join có state.
+
+Các panel prediction output:
+
+- `Prediction Confidence & Zone Coverage`: confidence trung bình và số zone có prediction theo event window.
+
+Các panel đã bỏ:
+
+- `MLflow`: `Model Loaded` trực tiếp hơn cho dashboard demo.
+- `Airflow`: service Airflow đang bị comment trong compose và không đo streaming throughput.
+- `Kafka Log End Offset`, `Kafka Request Latency p99`, `Kafka Log Size`, `Kafka JVM Heap Usage`: hữu ích khi debug Kafka sâu nhưng không kể câu chuyện input/output của pipeline.
+- `Spark Driver Heap Usage`: resource metric chung, không giống Structured Streaming tab.
+- `Host Resources`, `Container CPU/RAM`, `Network`, `Disk I/O`: nên để dashboard ops riêng nếu cần.
+- `MinIO Storage Used`: MinIO health đủ cho demo pipeline; dung lượng storage không nói lên tốc độ job.
+
+## Custom Metrics Mới
+
+Mỗi Spark job gọi `start_streaming_metrics_exporter(...)` và được gán một `STREAMING_METRICS_PORT` riêng:
+
+- `9101`: `kafka_to_bronze`
+- `9102`: `request_bronze_to_silver`
+- `9103`: `request_to_response_silver`
+- `9104`: `complete_bronze_to_silver`
+- `9105`: `silver_to_gold`
+
+Prometheus scrape job mới: `spark-structured-streaming`.
+
+Metric mới:
+
+- `nyc_spark_stream_active`
+- `nyc_spark_stream_input_rows`
+- `nyc_spark_stream_input_rows_per_second`
+- `nyc_spark_stream_processed_rows_per_second`
+- `nyc_spark_stream_batch_duration_ms`
+- `nyc_spark_stream_operation_duration_ms`
+- `nyc_spark_stream_state_rows_total`
+- `nyc_spark_stream_last_progress_timestamp`
+- `nyc_spark_stream_exporter_up`
+
+Giới hạn còn lại: `processedRowsPerSecond` là throughput xử lý của Spark, không phải số dòng đã commit thành công ở từng sink con. Nếu cần đếm riêng `bronze/request`, `bronze/pickup`, `bronze/dropoff`, cần thêm counter trong từng `foreachBatch`.

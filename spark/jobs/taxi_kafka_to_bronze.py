@@ -27,6 +27,7 @@ from pyspark.sql.types import (
     DoubleType,
     TimestampType,
 )
+from streaming_metrics import start_streaming_metrics_exporter
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 TOPIC = "nyc_taxi_events"
@@ -93,6 +94,7 @@ def main():
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
+    start_streaming_metrics_exporter(spark, "kafka_to_bronze")
 
     raw = (
         spark.readStream.format("kafka")
@@ -214,6 +216,7 @@ def main():
 
     query = (
         parsed.writeStream.foreachBatch(write_batch)
+        .queryName("kafka_to_bronze")
         .option("checkpointLocation", f"{CHECKPOINT_BASE}/kafka_to_bronze")
         .trigger(processingTime="10 seconds")
         .start()

@@ -271,7 +271,7 @@ echo "[1/5] Kafka → Bronze (request / pickup / dropoff)"
 echo "      Đọc: Kafka topic nyc_taxi_events"
 echo "      Ghi: s3a://bronze/request, bronze/pickup, bronze/dropoff"
 echo "      Tài nguyên: ${JOB1_TOTAL_CORES:-2} total cores, executor=${JOB1_EXECUTOR_CORES:-2} cores/${JOB1_EXECUTOR_MEMORY:-4g}, shuffle=${JOB1_SHUFFLE_PARTITIONS:-6}"
-${COMMON} ${RES_JOB1} "${JOBS_DIR}/taxi_kafka_to_bronze.py" &
+STREAMING_METRICS_PORT=9101 ${COMMON} ${RES_JOB1} "${JOBS_DIR}/taxi_kafka_to_bronze.py" &
 JOB1_PID=$!
 ALL_PIDS="${JOB1_PID}"
 echo "      PID: ${JOB1_PID}"
@@ -283,6 +283,7 @@ echo "      PID: ${JOB1_PID}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 (
+  export STREAMING_METRICS_PORT=9102
   exec ${COMMON_STATEFUL} ${RES_JOB2} "${JOBS_DIR}/request_bronze_to_silver.py"
 ) &
 JOB2_PID=$!
@@ -290,6 +291,7 @@ ALL_PIDS="${ALL_PIDS} ${JOB2_PID}"
 echo "      [2/5] PID: ${JOB2_PID}"
 
 (
+  export STREAMING_METRICS_PORT=9103
   exec ${COMMON_STATEFUL} ${RES_JOB3} "${JOBS_DIR}/request_to_response_silver.py"
 ) &
 JOB3_PID=$!
@@ -297,6 +299,7 @@ ALL_PIDS="${ALL_PIDS} ${JOB3_PID}"
 echo "      [3/5] PID: ${JOB3_PID}"
 
 (
+  export STREAMING_METRICS_PORT=9104
   exec ${COMMON_STATEFUL} ${RES_JOB4} "${JOBS_DIR}/complete_bronze_to_silver.py"
 ) &
 JOB4_PID=$!
@@ -304,6 +307,7 @@ ALL_PIDS="${ALL_PIDS} ${JOB4_PID}"
 echo "      [4/5] PID: ${JOB4_PID}"
 
 (
+  export STREAMING_METRICS_PORT=9105
   exec ${COMMON} ${RES_JOB5} "${JOBS_DIR}/silver_to_gold.py"
 ) &
 JOB5_PID=$!

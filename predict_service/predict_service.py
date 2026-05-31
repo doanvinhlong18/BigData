@@ -24,6 +24,11 @@ import sys
 import time
 import logging
 import signal
+import json
+import copy
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
 
 import pandas as pd
 import numpy as np
@@ -96,6 +101,7 @@ PG_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
 PG_DB = os.getenv("POSTGRES_DB", "bigdata")
 PG_USER = os.getenv("POSTGRES_USER", "admin")
 PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin123")
+ZONES_GEOJSON_PATH = os.getenv("ZONES_GEOJSON_PATH", "/app/nyc_taxi_zones.geojson")
 
 # Mỗi 15 giây poll 1 lần → khớp với gold trigger 15 giây
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_S", "15"))
@@ -103,6 +109,24 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_S", "15"))
 MODEL_RELOAD_INTERVAL = int(os.getenv("MODEL_RELOAD_INTERVAL_S", "300"))
 
 SLOT_MINUTES = 15
+
+DEMAND_LABELS = {
+    0: "0 - Không có",
+    1: "1 - Rất thấp",
+    2: "2 - Thấp",
+    3: "3 - Trung bình",
+    4: "4 - Cao",
+    5: "5 - Rất cao",
+}
+DEMAND_COLORS = {
+    0: "#F3F4F6",
+    1: "#7DD3FC",
+    2: "#2563EB",
+    3: "#FACC15",
+    4: "#F97316",
+    5: "#B91C1C",
+}
+NO_PREDICTION_COLOR = "#D1D5DB"
 
 STORAGE_OPTS = {
     "endpoint_url": MINIO_ENDPOINT,
@@ -207,6 +231,161 @@ def _restore_metrics_from_db():
         log.info(f"[METRICS] Restored zones_predicted_last_slot={zones or 0}")
     except Exception as e:
         log.warning(f"[METRICS] restore from DB failed: {e}")
+
+
+# ── GeoJSON endpoint for Grafana zone map ─────────────────────────────────────
+def _load_zone_geojson():
+    with open(ZONES_GEOJSON_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _latest_predictions_by_zone():
+    sql = """
+        WITH latest AS (
+            SELECT MAX(window_end) AS window_end
+            FROM predictions_monitoring
+        )
+        SELECT
+            zone_id,
+            predicted_class,
+            pred_confidence,
+            used_model,
+            model_version,
+            window_end
+        FROM predictions_monitoring
+        JOIN latest USING (window_end)
+    """
+    rows = {}
+    with _pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            for (
+                zone_id,
+                predicted_class,
+                pred_confidence,
+                used_model,
+                model_version,
+                window_end,
+            ) in cur.fetchall():
+                rows[int(zone_id)] = {
+                    "predicted_class": int(predicted_class),
+                    "confidence": float(pred_confidence),
+                    "model": used_model,
+                    "model_version": model_version or "n/a",
+                    "window_end": window_end.isoformat() if window_end else None,
+                }
+    return rows
+
+
+def _prediction_style(predicted_class: int | None):
+    if predicted_class is None:
+        return NO_PREDICTION_COLOR, "Không có prediction"
+    return (
+        DEMAND_COLORS.get(predicted_class, NO_PREDICTION_COLOR),
+        DEMAND_LABELS.get(predicted_class, "Không rõ"),
+    )
+
+
+def _build_prediction_geojson():
+    geojson = copy.deepcopy(_load_zone_geojson())
+    predictions = _latest_predictions_by_zone()
+
+    for feature in geojson.get("features", []):
+        props = feature.setdefault("properties", {})
+        try:
+            zone_id = int(props.get("LocationID"))
+        except (TypeError, ValueError):
+            zone_id = None
+
+        pred = predictions.get(zone_id)
+        if pred:
+            predicted_class = pred["predicted_class"]
+            fill, label = _prediction_style(predicted_class)
+            props.update(
+                {
+                    "has_prediction": True,
+                    "predicted_class": predicted_class,
+                    "demand_label": label,
+                    "confidence": round(pred["confidence"], 3),
+                    "model": pred["model"],
+                    "model_version": pred["model_version"],
+                    "window_end": pred["window_end"],
+                    "fill": fill,
+                    "fill-opacity": 0.9,
+                    "stroke": "#FFFFFF",
+                    "stroke-width": 0.7,
+                }
+            )
+        else:
+            fill, label = _prediction_style(None)
+            props.update(
+                {
+                    "has_prediction": False,
+                    "predicted_class": None,
+                    "demand_label": label,
+                    "confidence": None,
+                    "model": None,
+                    "model_version": None,
+                    "window_end": None,
+                    "fill": fill,
+                    "fill-opacity": 0.45,
+                    "stroke": "#FFFFFF",
+                    "stroke-width": 0.5,
+                }
+            )
+
+    geojson.setdefault("properties", {})
+    geojson["properties"].update(
+        {
+            "prediction_count": len(predictions),
+            "latest_window": next(
+                (p["window_end"] for p in predictions.values() if p["window_end"]),
+                None,
+            ),
+        }
+    )
+    return geojson
+
+
+class _ZonePredictionGeoJSONHandler(BaseHTTPRequestHandler):
+    def _send_json(self, status, payload):
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        self.send_response(status)
+        self.send_header("Content-Type", "application/geo+json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path in ("/", "/health"):
+            self._send_json(200, {"status": "ok"})
+            return
+        if path != "/zone-predictions.geojson":
+            self._send_json(404, {"error": "not found"})
+            return
+        try:
+            self._send_json(200, _build_prediction_geojson())
+        except Exception as e:
+            log.error(f"[GEOJSON] build failed: {e}", exc_info=True)
+            self._send_json(500, {"error": str(e)})
+
+    def log_message(self, fmt, *args):
+        log.debug("[GEOJSON] " + fmt, *args)
+
+
+def _start_geojson_server(port: int):
+    server = ThreadingHTTPServer(("0.0.0.0", port), _ZonePredictionGeoJSONHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    log.info(
+        f"[INIT] Zone GeoJSON endpoint: http://0.0.0.0:{port}/zone-predictions.geojson"
+    )
+    return server
 
 
 # ── Gold helpers ───────────────────────────────────────────────────────────────
@@ -529,6 +708,8 @@ def main():
     log.info(
         f"[INIT] Prometheus metrics endpoint: http://0.0.0.0:{METRICS_PORT}/metrics"
     )
+    GEOJSON_PORT = int(os.getenv("GEOJSON_PORT", "8002"))
+    _start_geojson_server(GEOJSON_PORT)
 
     # Chờ các service phụ thuộc sẵn sàng
     time.sleep(10)

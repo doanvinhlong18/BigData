@@ -28,6 +28,7 @@ import time
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, to_timestamp, expr
+from streaming_metrics import start_streaming_metrics_exporter
 
 # ── ENV ──────────────────────────────────────────────────
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
@@ -92,6 +93,7 @@ def main():
     )
 
     spark.sparkContext.setLogLevel("WARN")
+    start_streaming_metrics_exporter(spark, "complete_bronze_to_silver")
 
     # Chờ cả 2 source sẵn sàng (jobs submit đồng thời)
     wait_for_source(spark, SILVER_RESPONSE)
@@ -214,6 +216,7 @@ def main():
     # ───────────────────────────────────────────────
     query = (
         complete_stream.writeStream.format("delta")
+        .queryName("complete_bronze_to_silver")
         .outputMode("append")
         .option("checkpointLocation", CHECKPOINT)
         .option("mergeSchema", "true")

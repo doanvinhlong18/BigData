@@ -1,1121 +1,1304 @@
 {
-  "title": "NYC Taxi Demand Forecast \u2014 Zone Heatmap",
-  "uid": "nyc-demand-map-v3",
-  "version": 1,
-  "schemaVersion": 38,
-  "refresh": "30s",
-  "time": {
-    "from": "now-24h",
-    "to": "now"
-  },
-  "timepicker": {},
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
-  "tags": [
-    "demand",
-    "forecast",
-    "nyc",
-    "map"
-  ],
-  "links": [],
-  "annotations": {
-    "list": []
-  },
-  "templating": {
-    "list": []
-  },
-  "panels": [
-    {
-      "id": 1,
-      "title": "\ud83d\uddfa\ufe0f NYC Demand Forecast \u2014 Zone Heatmap (Latest Window)",
-      "description": "M\u00e0u theo predicted_class: 0=tr\u1eafng xanh (kh\u00f4ng c\u00f3 demand) \u2192 5=\u0111\u1ecf \u0111\u1eadm (demand r\u1ea5t cao). D\u1eef li\u1ec7u t\u1ef1 \u0111\u1ed9ng c\u1eadp nh\u1eadt m\u1ed7i 30s khi predict_service ghi batch m\u1edbi v\u00e0o PostgreSQL.",
-      "type": "geomap",
-      "gridPos": {
-        "x": 0,
-        "y": 0,
-        "w": 24,
-        "h": 18
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "PostgreSQL"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n    zone_id,\n    predicted_class,\n    ROUND(pred_confidence::numeric, 3) AS confidence,\n    used_model,\n    window_end\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nORDER BY zone_id",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#EAF3FF",
-                "value": null
-              },
-              {
-                "color": "#B3D4FF",
-                "value": 1
-              },
-              {
-                "color": "#5C9EE0",
-                "value": 2
-              },
-              {
-                "color": "#F5A623",
-                "value": 3
-              },
-              {
-                "color": "#E85D04",
-                "value": 4
-              },
-              {
-                "color": "#9D0208",
-                "value": 5
-              }
-            ]
-          },
-          "mappings": [],
-          "custom": {
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            }
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "predicted_class"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Demand Level (0\u20135)"
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "thresholds"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "#EAF3FF",
-                      "value": null
+    "title":  "NYC Taxi Demand Forecast - Zone Heatmap",
+    "uid":  "nyc-demand-v2",
+    "version":  1,
+    "schemaVersion":  38,
+    "refresh":  "30s",
+    "time":  {
+                 "from":  "now-1y",
+                 "to":  "now"
+             },
+    "timepicker":  {
+
+                   },
+    "fiscalYearStartMonth":  0,
+    "graphTooltip":  0,
+    "tags":  [
+                 "demand",
+                 "forecast",
+                 "nyc",
+                 "map"
+             ],
+    "links":  [
+
+              ],
+    "annotations":  {
+                        "list":  [
+
+                                 ]
                     },
-                    {
-                      "color": "#B3D4FF",
-                      "value": 1
-                    },
-                    {
-                      "color": "#5C9EE0",
-                      "value": 2
-                    },
-                    {
-                      "color": "#F5A623",
-                      "value": 3
-                    },
-                    {
-                      "color": "#E85D04",
-                      "value": 4
-                    },
-                    {
-                      "color": "#9D0208",
-                      "value": 5
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 5
-              },
-              {
-                "id": "decimals",
-                "value": 0
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "zone_id"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Zone ID"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "viz": false,
-                  "legend": true,
-                  "tooltip": false
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "confidence"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Confidence"
-              },
-              {
-                "id": "unit",
-                "value": "percentunit"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "viz": true,
-                  "legend": true,
-                  "tooltip": false
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "used_model"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Model"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "viz": true,
-                  "legend": true,
-                  "tooltip": false
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "window_end"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Window"
-              },
-              {
-                "id": "unit",
-                "value": "dateTimeAsIso"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "viz": true,
-                  "legend": true,
-                  "tooltip": false
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "view": {
-          "id": "coords",
-          "lat": 40.7128,
-          "lon": -74.006,
-          "zoom": 10
-        },
-        "controls": {
-          "showZoom": true,
-          "mouseWheelZoom": true,
-          "showAttribution": true,
-          "showScale": true,
-          "showMeasure": false,
-          "showDebug": false
-        },
-        "tooltip": {
-          "mode": "details"
-        },
-        "layers": [
-          {
-            "type": "default",
-            "name": "Basemap",
-            "config": {
-              "showLegend": false
-            }
-          },
-          {
-            "type": "geojson",
-            "name": "NYC TLC Zones \u2014 Demand",
-            "config": {
-              "src": "public/maps/nyc_taxi_zones.geojson",
-              "rules": [],
-              "style": {
-                "color": {
-                  "fixed": "#EAF3FF",
-                  "mode": "fixed"
-                },
-                "opacity": 0.85,
-                "rotation": {
-                  "fixed": 0,
-                  "max": 360,
-                  "min": -360,
-                  "mode": "fixed"
-                },
-                "size": {
-                  "fixed": 1,
-                  "max": 15,
-                  "min": 2,
-                  "mode": "fixed"
-                },
-                "symbol": {
-                  "fixed": "img/icons/marker/circle.svg",
-                  "mode": "fixed"
-                },
-                "textConfig": {
-                  "fontSize": 12,
-                  "offsetX": 0,
-                  "offsetY": 0,
-                  "textAlign": "center",
-                  "textBaseline": "middle"
-                },
-                "strokeColor": {
-                  "fixed": "#555555",
-                  "mode": "fixed"
-                },
-                "strokeWidth": {
-                  "fixed": 1,
-                  "mode": "fixed"
-                },
-                "fillColor": {
-                  "field": "predicted_class",
-                  "fixed": "#EAF3FF",
-                  "mode": "thresholds",
-                  "thresholds": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "color": "#EAF3FF",
-                        "value": null
-                      },
-                      {
-                        "color": "#B3D4FF",
-                        "value": 1
-                      },
-                      {
-                        "color": "#5C9EE0",
-                        "value": 2
-                      },
-                      {
-                        "color": "#F5A623",
-                        "value": 3
-                      },
-                      {
-                        "color": "#E85D04",
-                        "value": 4
-                      },
-                      {
-                        "color": "#9D0208",
-                        "value": 5
-                      }
-                    ]
-                  }
-                }
-              },
-              "featureMappingField": "LocationID",
-              "dataField": "zone_id",
-              "src_json": null
-            },
-            "tooltip": true,
-            "filterData": null
-          }
-        ],
-        "basemap": {
-          "config": {},
-          "name": "Layer 0",
-          "type": "default"
-        },
-        "legend": {
-          "displayMode": "list"
-        }
-      }
-    },
-    {
-      "id": 20,
-      "title": "\ud83d\udcca Stats",
-      "type": "row",
-      "gridPos": {
-        "x": 0,
-        "y": 18,
-        "w": 24,
-        "h": 1
-      },
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "id": 2,
-      "title": "\u23f0 Latest Window",
-      "type": "stat",
-      "gridPos": {
-        "x": 0,
-        "y": 19,
-        "w": 5,
-        "h": 4
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "PostgreSQL"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT MAX(window_end) AS latest_window FROM predictions_monitoring",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "colorMode": "none",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "dateTimeAsIso",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "#F2CC0C"
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "id": 3,
-      "title": "\ud83d\uddfe Zones Predicted",
-      "type": "stat",
-      "gridPos": {
-        "x": 5,
-        "y": 19,
-        "w": 4,
-        "h": 4
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "PostgreSQL"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS zones FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "blue"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "value": null,
-                "color": "blue"
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "id": 4,
-      "title": "\ud83c\udfaf Avg Confidence (Latest)",
-      "type": "gauge",
-      "gridPos": {
-        "x": 9,
-        "y": 19,
-        "w": 5,
-        "h": 4
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "PostgreSQL"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT ROUND(AVG(pred_confidence)::numeric, 3) AS avg_conf FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "value": null,
-                "color": "red"
-              },
-              {
-                "value": 0.5,
-                "color": "yellow"
-              },
-              {
-                "value": 0.7,
-                "color": "green"
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "id": 5,
-      "title": "\ud83e\udd16 Model A / B Split",
-      "type": "piechart",
-      "gridPos": {
-        "x": 14,
-        "y": 19,
-        "w": 5,
-        "h": 4
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "PostgreSQL"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT used_model, COUNT(*) AS cnt FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring) GROUP BY used_model",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "pieType": "donut",
-        "legendDisplayMode": "table",
-        "placement": "right"
-      },
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      }
-    },
-    {
-      "id": 6,
-      "title": "\ud83d\udcca Demand Distribution (Latest Window)",
-      "type": "bargauge",
-      "gridPos": {
-        "x": 19,
-        "y": 19,
-        "w": 5,
-        "h": 4
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "PostgreSQL"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT predicted_class::text AS level, COUNT(*) AS zones\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nGROUP BY predicted_class ORDER BY predicted_class",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "orientation": "horizontal",
-        "displayMode": "gradient",
-        "showUnfilled": true
-      },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "value": null,
-                "color": "#EAF3FF"
-              },
-              {
-                "value": 1,
-                "color": "#B3D4FF"
-              },
-              {
-                "value": 2,
-                "color": "#5C9EE0"
-              },
-              {
-                "value": 3,
-                "color": "#F5A623"
-              },
-              {
-                "value": 4,
-                "color": "#E85D04"
-              },
-              {
-                "value": 5,
-                "color": "#9D0208"
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "id": 21,
-      "title": "\ud83d\udcc8 Trends",
-      "type": "row",
-      "gridPos": {
-        "x": 0,
-        "y": 23,
-        "w": 24,
-        "h": 1
-      },
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "id": 7,
-      "title": "\ud83d\udcc8 Demand Level Trend \u2014 Zone Count by Level",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 24,
-        "w": 16,
-        "h": 8
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "PostgreSQL"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
-          },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT\n    window_end AS \"time\",\n    SUM(CASE WHEN predicted_class = 0 THEN 1 ELSE 0 END) AS \"0 \u2013 None\",\n    SUM(CASE WHEN predicted_class = 1 THEN 1 ELSE 0 END) AS \"1 \u2013 Very Low\",\n    SUM(CASE WHEN predicted_class = 2 THEN 1 ELSE 0 END) AS \"2 \u2013 Low\",\n    SUM(CASE WHEN predicted_class = 3 THEN 1 ELSE 0 END) AS \"3 \u2013 Medium\",\n    SUM(CASE WHEN predicted_class = 4 THEN 1 ELSE 0 END) AS \"4 \u2013 High\",\n    SUM(CASE WHEN predicted_class = 5 THEN 1 ELSE 0 END) AS \"5 \u2013 Critical\"\nFROM predictions_monitoring\nWHERE $__timeFilter(window_end)\nGROUP BY window_end\nORDER BY window_end",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 20,
-            "drawStyle": "line",
-            "stacking": {
-              "mode": "normal",
-              "group": "A"
-            },
-            "gradientMode": "none"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "0 \u2013 None"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#EAF3FF"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "1 \u2013 Very Low"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#B3D4FF"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "2 \u2013 Low"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#5C9EE0"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "3 \u2013 Medium"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#F5A623"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "4 \u2013 High"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#E85D04"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "5 \u2013 Critical"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#9D0208"
-                }
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": 8,
-      "title": "\ud83d\udd25 Top 15 Hottest Zones (Latest)",
-      "type": "table",
-      "gridPos": {
-        "x": 16,
-        "y": 24,
-        "w": 8,
-        "h": 8
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "PostgreSQL"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n    zone_id AS \"Zone\",\n    predicted_class AS \"Demand\",\n    ROUND(pred_confidence::numeric, 3) AS \"Conf\",\n    used_model AS \"Model\"\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nORDER BY predicted_class DESC, pred_confidence DESC\nLIMIT 15",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "sortBy": [
-          {
-            "displayName": "Demand",
-            "desc": true
-          }
-        ],
-        "footer": {
-          "show": false
-        }
-      },
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Demand"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "color-background"
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "value": null,
-                      "color": "#EAF3FF"
-                    },
-                    {
-                      "value": 1,
-                      "color": "#B3D4FF"
-                    },
-                    {
-                      "value": 2,
-                      "color": "#5C9EE0"
-                    },
-                    {
-                      "value": 3,
-                      "color": "#F5A623"
-                    },
-                    {
-                      "value": 4,
-                      "color": "#E85D04"
-                    },
-                    {
-                      "value": 5,
-                      "color": "#9D0208"
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "thresholds"
-                }
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 5
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Conf"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percentunit"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": 22,
-      "title": "\ud83c\udf21\ufe0f Per-Zone 24h Summary",
-      "type": "row",
-      "gridPos": {
-        "x": 0,
-        "y": 32,
-        "w": 24,
-        "h": 1
-      },
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "id": 9,
-      "title": "\ud83c\udf21\ufe0f All 263 Zones \u2014 Avg Demand (24h)",
-      "description": "M\u00e0u \u00f4 = avg demand 24h qua. S\u1eafp x\u1ebfp theo avg demand gi\u1ea3m d\u1ea7n.",
-      "type": "table",
-      "gridPos": {
-        "x": 0,
-        "y": 33,
-        "w": 24,
-        "h": 12
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "PostgreSQL"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n    zone_id            AS \"Zone\",\n    ROUND(AVG(predicted_class)::numeric, 2) AS \"Avg Demand\",\n    MAX(predicted_class)                     AS \"Peak\",\n    MIN(predicted_class)                     AS \"Min\",\n    ROUND(AVG(pred_confidence)::numeric, 3)  AS \"Avg Conf\",\n    COUNT(*)                                 AS \"# Slots\",\n    MODE() WITHIN GROUP (ORDER BY used_model) AS \"Model\"\nFROM predictions_monitoring\nWHERE window_end >= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL '24 hours'\nGROUP BY zone_id\nORDER BY \"Avg Demand\" DESC, zone_id",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "sortBy": [
-          {
-            "displayName": "Avg Demand",
-            "desc": true
-          }
-        ],
-        "footer": {
-          "show": false
-        },
-        "frameIndex": 0
-      },
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Avg Demand"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "color-background-solid"
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "value": null,
-                      "color": "#EAF3FF"
-                    },
-                    {
-                      "value": 0.5,
-                      "color": "#B3D4FF"
-                    },
-                    {
-                      "value": 1.5,
-                      "color": "#5C9EE0"
-                    },
-                    {
-                      "value": 2.5,
-                      "color": "#F5A623"
-                    },
-                    {
-                      "value": 3.5,
-                      "color": "#E85D04"
-                    },
-                    {
-                      "value": 4.5,
-                      "color": "#9D0208"
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "thresholds"
-                }
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 5
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Peak"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "color-background-solid"
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "value": null,
-                      "color": "#EAF3FF"
-                    },
-                    {
-                      "value": 1,
-                      "color": "#B3D4FF"
-                    },
-                    {
-                      "value": 2,
-                      "color": "#5C9EE0"
-                    },
-                    {
-                      "value": 3,
-                      "color": "#F5A623"
-                    },
-                    {
-                      "value": 4,
-                      "color": "#E85D04"
-                    },
-                    {
-                      "value": 5,
-                      "color": "#9D0208"
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "thresholds"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Avg Conf"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percentunit"
-              }
-            ]
-          }
-        ]
-      }
-    }
-  ]
+    "templating":  {
+                       "list":  [
+
+                                ]
+                   },
+    "panels":  [
+                   {
+                       "id":  1,
+                       "title":  "NYC Demand Forecast - Latest Zone Heatmap",
+                       "description":  "Màu polygon thể hiện predicted_class cho từng TLC zone ở latest event window. Zone không có prediction trong latest window sẽ có màu xám nhạt.",
+                       "type":  "geomap",
+                       "gridPos":  {
+                                       "x":  0,
+                                       "y":  0,
+                                       "w":  24,
+                                       "h":  19
+                                   },
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "PostgreSQL"
+                                      },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "PostgreSQL"
+                                                          },
+                                           "editorMode":  "code",
+                                           "format":  "table",
+                                           "rawQuery":  true,
+                                           "rawSql":  "WITH latest AS (\n    SELECT MAX(window_end) AS window_end\n    FROM predictions_monitoring\n)\nSELECT\n    zone_id,\n    predicted_class,\n    CASE predicted_class\n        WHEN 0 THEN \u00270 - Không có\u0027\n        WHEN 1 THEN \u00271 - Rất thấp\u0027\n        WHEN 2 THEN \u00272 - Thấp\u0027\n        WHEN 3 THEN \u00273 - Trung bình\u0027\n        WHEN 4 THEN \u00274 - Cao\u0027\n        WHEN 5 THEN \u00275 - Rất cao\u0027\n        ELSE \u0027Không rõ\u0027\n    END AS demand_label,\n    ROUND(pred_confidence::numeric, 3) AS confidence,\n    used_model AS model,\n    COALESCE(model_version, \u0027n/a\u0027) AS model_version,\n    window_end\nFROM predictions_monitoring\nJOIN latest USING (window_end)\nORDER BY zone_id",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "#F3F4F6",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#7DD3FC",
+                                                                                                 "value":  1
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#2563EB",
+                                                                                                 "value":  2
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#FACC15",
+                                                                                                 "value":  3
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#F97316",
+                                                                                                 "value":  4
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#B91C1C",
+                                                                                                 "value":  5
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "mappings":  [
+                                                                             {
+                                                                                 "type":  "value",
+                                                                                 "options":  {
+                                                                                                 "0":  {
+                                                                                                           "text":  "0 - Không có",
+                                                                                                           "color":  "#F3F4F6",
+                                                                                                           "index":  0
+                                                                                                       },
+                                                                                                 "1":  {
+                                                                                                           "text":  "1 - Rất thấp",
+                                                                                                           "color":  "#7DD3FC",
+                                                                                                           "index":  1
+                                                                                                       },
+                                                                                                 "2":  {
+                                                                                                           "text":  "2 - Thấp",
+                                                                                                           "color":  "#2563EB",
+                                                                                                           "index":  2
+                                                                                                       },
+                                                                                                 "3":  {
+                                                                                                           "text":  "3 - Trung bình",
+                                                                                                           "color":  "#FACC15",
+                                                                                                           "index":  3
+                                                                                                       },
+                                                                                                 "4":  {
+                                                                                                           "text":  "4 - Cao",
+                                                                                                           "color":  "#F97316",
+                                                                                                           "index":  4
+                                                                                                       },
+                                                                                                 "5":  {
+                                                                                                           "text":  "5 - Rất cao",
+                                                                                                           "color":  "#B91C1C",
+                                                                                                           "index":  5
+                                                                                                       }
+                                                                                             }
+                                                                             }
+                                                                         ],
+                                                            "custom":  {
+                                                                           "hideFrom":  {
+                                                                                            "legend":  false,
+                                                                                            "tooltip":  false,
+                                                                                            "viz":  false
+                                                                                        }
+                                                                       }
+                                                        },
+                                           "overrides":  [
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "predicted_class"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "displayName",
+                                                                                        "value":  "Demand Level"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "mode":  "thresholds"
+                                                                                                  }
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "thresholds",
+                                                                                        "value":  {
+                                                                                                      "mode":  "absolute",
+                                                                                                      "steps":  [
+                                                                                                                    {
+                                                                                                                        "color":  "#F3F4F6",
+                                                                                                                        "value":  null
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#7DD3FC",
+                                                                                                                        "value":  1
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#2563EB",
+                                                                                                                        "value":  2
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#FACC15",
+                                                                                                                        "value":  3
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#F97316",
+                                                                                                                        "value":  4
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#B91C1C",
+                                                                                                                        "value":  5
+                                                                                                                    }
+                                                                                                                ]
+                                                                                                  }
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "mappings",
+                                                                                        "value":  [
+                                                                                                      {
+                                                                                                          "type":  "value",
+                                                                                                          "options":  {
+                                                                                                                          "0":  {
+                                                                                                                                    "text":  "0 - Không có",
+                                                                                                                                    "color":  "#F3F4F6",
+                                                                                                                                    "index":  0
+                                                                                                                                },
+                                                                                                                          "1":  {
+                                                                                                                                    "text":  "1 - Rất thấp",
+                                                                                                                                    "color":  "#7DD3FC",
+                                                                                                                                    "index":  1
+                                                                                                                                },
+                                                                                                                          "2":  {
+                                                                                                                                    "text":  "2 - Thấp",
+                                                                                                                                    "color":  "#2563EB",
+                                                                                                                                    "index":  2
+                                                                                                                                },
+                                                                                                                          "3":  {
+                                                                                                                                    "text":  "3 - Trung bình",
+                                                                                                                                    "color":  "#FACC15",
+                                                                                                                                    "index":  3
+                                                                                                                                },
+                                                                                                                          "4":  {
+                                                                                                                                    "text":  "4 - Cao",
+                                                                                                                                    "color":  "#F97316",
+                                                                                                                                    "index":  4
+                                                                                                                                },
+                                                                                                                          "5":  {
+                                                                                                                                    "text":  "5 - Rất cao",
+                                                                                                                                    "color":  "#B91C1C",
+                                                                                                                                    "index":  5
+                                                                                                                                }
+                                                                                                                      }
+                                                                                                      }
+                                                                                                  ]
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "min",
+                                                                                        "value":  0
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "max",
+                                                                                        "value":  5
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "decimals",
+                                                                                        "value":  0
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "zone_id"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "displayName",
+                                                                                        "value":  "Zone ID"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "custom.hideFrom",
+                                                                                        "value":  {
+                                                                                                      "viz":  false,
+                                                                                                      "legend":  true,
+                                                                                                      "tooltip":  false
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "demand_label"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "displayName",
+                                                                                        "value":  "Prediction"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "custom.hideFrom",
+                                                                                        "value":  {
+                                                                                                      "viz":  true,
+                                                                                                      "legend":  true,
+                                                                                                      "tooltip":  false
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "confidence"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "displayName",
+                                                                                        "value":  "Confidence"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "unit",
+                                                                                        "value":  "percentunit"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "custom.hideFrom",
+                                                                                        "value":  {
+                                                                                                      "viz":  true,
+                                                                                                      "legend":  true,
+                                                                                                      "tooltip":  false
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "model"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "displayName",
+                                                                                        "value":  "Model"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "custom.hideFrom",
+                                                                                        "value":  {
+                                                                                                      "viz":  true,
+                                                                                                      "legend":  true,
+                                                                                                      "tooltip":  false
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "model_version"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "displayName",
+                                                                                        "value":  "Model Version"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "custom.hideFrom",
+                                                                                        "value":  {
+                                                                                                      "viz":  true,
+                                                                                                      "legend":  true,
+                                                                                                      "tooltip":  false
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "window_end"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "displayName",
+                                                                                        "value":  "Event Window"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "unit",
+                                                                                        "value":  "dateTimeAsIso"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "custom.hideFrom",
+                                                                                        "value":  {
+                                                                                                      "viz":  true,
+                                                                                                      "legend":  true,
+                                                                                                      "tooltip":  false
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             }
+                                                         ]
+                                       },
+                       "options":  {
+                                       "view":  {
+                                                    "id":  "coords",
+                                                    "lat":  40.7128,
+                                                    "lon":  -74.006,
+                                                    "zoom":  10
+                                                },
+                                       "controls":  {
+                                                        "showZoom":  true,
+                                                        "mouseWheelZoom":  true,
+                                                        "showAttribution":  true,
+                                                        "showScale":  true,
+                                                        "showMeasure":  false,
+                                                        "showDebug":  false
+                                                    },
+                                       "tooltip":  {
+                                                       "mode":  "details"
+                                                   },
+                                       "layers":  [
+                                                       {
+                                                           "type":  "carto",
+                                                           "name":  "Light basemap",
+                                                           "config":  {
+                                                                          "theme":  "light",
+                                                                          "showLabels":  true
+                                                                      }
+                                                       },
+                                                       {
+                                                           "type":  "geojson",
+                                                           "name":  "TLC Zones - predicted demand",
+                                                           "config":  {
+                                                                          "src":  "http://localhost:8002/zone-predictions.geojson",
+                                                                          "rules":  [
+                                                                                       {
+                                                                                           "check":  {
+                                                                                                         "property":  "predicted_class",
+                                                                                                         "operation":  "eq",
+                                                                                                         "value":  0
+                                                                                                     },
+                                                                                           "style":  {
+                                                                                                         "color":  {
+                                                                                                                       "fixed":  "#F3F4F6"
+                                                                                                                   },
+                                                                                                         "opacity":  0.9,
+                                                                                                         "lineWidth":  0.35
+                                                                                                     }
+                                                                                       },
+                                                                                       {
+                                                                                           "check":  {
+                                                                                                         "property":  "predicted_class",
+                                                                                                         "operation":  "eq",
+                                                                                                         "value":  1
+                                                                                                     },
+                                                                                           "style":  {
+                                                                                                         "color":  {
+                                                                                                                       "fixed":  "#7DD3FC"
+                                                                                                                   },
+                                                                                                         "opacity":  0.9,
+                                                                                                         "lineWidth":  0.35
+                                                                                                     }
+                                                                                       },
+                                                                                       {
+                                                                                           "check":  {
+                                                                                                         "property":  "predicted_class",
+                                                                                                         "operation":  "eq",
+                                                                                                         "value":  2
+                                                                                                     },
+                                                                                           "style":  {
+                                                                                                         "color":  {
+                                                                                                                       "fixed":  "#2563EB"
+                                                                                                                   },
+                                                                                                         "opacity":  0.88,
+                                                                                                         "lineWidth":  0.35
+                                                                                                     }
+                                                                                       },
+                                                                                       {
+                                                                                           "check":  {
+                                                                                                         "property":  "predicted_class",
+                                                                                                         "operation":  "eq",
+                                                                                                         "value":  3
+                                                                                                     },
+                                                                                           "style":  {
+                                                                                                         "color":  {
+                                                                                                                       "fixed":  "#FACC15"
+                                                                                                                   },
+                                                                                                         "opacity":  0.9,
+                                                                                                         "lineWidth":  0.35
+                                                                                                     }
+                                                                                       },
+                                                                                       {
+                                                                                           "check":  {
+                                                                                                         "property":  "predicted_class",
+                                                                                                         "operation":  "eq",
+                                                                                                         "value":  4
+                                                                                                     },
+                                                                                           "style":  {
+                                                                                                         "color":  {
+                                                                                                                       "fixed":  "#F97316"
+                                                                                                                   },
+                                                                                                         "opacity":  0.9,
+                                                                                                         "lineWidth":  0.35
+                                                                                                     }
+                                                                                       },
+                                                                                       {
+                                                                                           "check":  {
+                                                                                                         "property":  "predicted_class",
+                                                                                                         "operation":  "eq",
+                                                                                                         "value":  5
+                                                                                                     },
+                                                                                           "style":  {
+                                                                                                         "color":  {
+                                                                                                                       "fixed":  "#B91C1C"
+                                                                                                                   },
+                                                                                                         "opacity":  0.9,
+                                                                                                         "lineWidth":  0.35
+                                                                                                     }
+                                                                                       }
+                                                                                    ],
+                                                                          "style":  {
+                                                                                        "color":  {
+                                                                                                      "fixed":  "#D1D5DB"
+                                                                                                  },
+                                                                                        "opacity":  0.55,
+                                                                                        "lineWidth":  0.25
+                                                                                    },
+                                                                          "src_json":  null
+                                                                      },
+                                                           "tooltip":  true,
+                                                           "filterData":  null
+                                                       },
+                                                       {
+                                                           "type":  "geojson",
+                                                           "name":  "TLC Zone boundaries",
+                                                           "config":  {
+                                                                          "src":  "http://localhost:8002/zone-predictions.geojson",
+                                                                          "rules":  [
+
+                                                                                    ],
+                                                                          "style":  {
+                                                                                        "color":  {
+                                                                                                      "fixed":  "#FFFFFF"
+                                                                                                  },
+                                                                                        "opacity":  0,
+                                                                                        "lineWidth":  0.85
+                                                                                    },
+                                                                          "src_json":  null
+                                                                      },
+                                                           "tooltip":  false,
+                                                           "filterData":  null
+                                                       }
+                                                   ],
+                                        "basemap":  {
+                                                        "config":  {
+                                                                       "theme":  "light",
+                                                                       "showLabels":  true
+                                                                   },
+                                                        "name":  "Light basemap",
+                                                        "type":  "carto"
+                                                    },
+                                       "legend":  {
+                                                      "displayMode":  "list"
+                                                  }
+                                   }
+                   },
+                   {
+                       "id":  20,
+                       "title":  "Prediction Overview",
+                       "type":  "row",
+                       "gridPos":  {
+                                       "x":  0,
+                                       "y":  19,
+                                       "w":  24,
+                                       "h":  1
+                                   },
+                       "collapsed":  false,
+                       "panels":  [
+
+                                  ]
+                   },
+                   {
+                       "id":  2,
+                       "title":  "Latest Event Window",
+                       "type":  "stat",
+                       "gridPos":  {
+                                       "x":  0,
+                                       "y":  20,
+                                       "w":  6,
+                                       "h":  4
+                                   },
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "PostgreSQL"
+                                      },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "PostgreSQL"
+                                                          },
+                                           "editorMode":  "code",
+                                           "format":  "table",
+                                           "rawQuery":  true,
+                                           "rawSql":  "SELECT MAX(window_end) AS latest_window FROM predictions_monitoring",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "options":  {
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ]
+                                                         },
+                                       "colorMode":  "none",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "center",
+                                       "textMode":  "value"
+                                   },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "unit":  "dateTimeAsIso",
+                                                            "color":  {
+                                                                          "mode":  "fixed",
+                                                                          "fixedColor":  "#F2CC0C"
+                                                                      }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       }
+                   },
+                   {
+                       "id":  3,
+                       "title":  "Zones Covered",
+                       "type":  "stat",
+                       "gridPos":  {
+                                       "x":  6,
+                                       "y":  20,
+                                       "w":  4,
+                                       "h":  4
+                                   },
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "PostgreSQL"
+                                      },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "PostgreSQL"
+                                                          },
+                                           "editorMode":  "code",
+                                           "format":  "table",
+                                           "rawQuery":  true,
+                                           "rawSql":  "SELECT COUNT(*) AS zones_predicted FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "options":  {
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ]
+                                                         },
+                                       "colorMode":  "background",
+                                       "graphMode":  "none"
+                                   },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "unit":  "short",
+                                                            "color":  {
+                                                                          "mode":  "fixed",
+                                                                          "fixedColor":  "blue"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "#F3F4F6",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#7DD3FC",
+                                                                                                 "value":  1
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#2563EB",
+                                                                                                 "value":  2
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#FACC15",
+                                                                                                 "value":  3
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#F97316",
+                                                                                                 "value":  4
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#B91C1C",
+                                                                                                 "value":  5
+                                                                                             }
+                                                                                         ]
+                                                                           }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       }
+                   },
+                   {
+                       "id":  10,
+                       "title":  "Missing Zones",
+                       "type":  "stat",
+                       "gridPos":  {
+                                       "x":  10,
+                                       "y":  20,
+                                       "w":  4,
+                                       "h":  4
+                                   },
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "PostgreSQL"
+                                      },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "PostgreSQL"
+                                                          },
+                                           "editorMode":  "code",
+                                           "format":  "table",
+                                           "rawQuery":  true,
+                                           "rawSql":  "SELECT GREATEST(263 - COUNT(*), 0) AS missing_zones FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "options":  {
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ]
+                                                         },
+                                       "colorMode":  "background",
+                                       "graphMode":  "none"
+                                   },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "unit":  "short",
+                                                            "color":  {
+                                                                          "mode":  "fixed",
+                                                                          "fixedColor":  "blue"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "#F3F4F6",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#7DD3FC",
+                                                                                                 "value":  1
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#2563EB",
+                                                                                                 "value":  2
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#FACC15",
+                                                                                                 "value":  3
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#F97316",
+                                                                                                 "value":  4
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#B91C1C",
+                                                                                                 "value":  5
+                                                                                             }
+                                                                                         ]
+                                                                           }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       }
+                   },
+                   {
+                       "id":  4,
+                       "title":  "Average Confidence",
+                       "type":  "gauge",
+                       "gridPos":  {
+                                       "x":  14,
+                                       "y":  20,
+                                       "w":  5,
+                                       "h":  4
+                                   },
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "PostgreSQL"
+                                      },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "PostgreSQL"
+                                                          },
+                                           "editorMode":  "code",
+                                           "format":  "table",
+                                           "rawQuery":  true,
+                                           "rawSql":  "SELECT ROUND(AVG(pred_confidence)::numeric, 3) AS avg_confidence FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "options":  {
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ]
+                                                         },
+                                       "showThresholdLabels":  false,
+                                       "showThresholdMarkers":  true
+                                   },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "unit":  "percentunit",
+                                                            "min":  0,
+                                                            "max":  1,
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "#F3F4F6",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#7DD3FC",
+                                                                                                 "value":  1
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#2563EB",
+                                                                                                 "value":  2
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#FACC15",
+                                                                                                 "value":  3
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#F97316",
+                                                                                                 "value":  4
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#B91C1C",
+                                                                                                 "value":  5
+                                                                                             }
+                                                                                         ]
+                                                                           }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       }
+                   },
+                   {
+                       "id":  11,
+                       "title":  "Peak Demand Level",
+                       "type":  "stat",
+                       "gridPos":  {
+                                       "x":  19,
+                                       "y":  20,
+                                       "w":  5,
+                                       "h":  4
+                                   },
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "PostgreSQL"
+                                      },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "PostgreSQL"
+                                                          },
+                                           "editorMode":  "code",
+                                           "format":  "table",
+                                           "rawQuery":  true,
+                                           "rawSql":  "SELECT MAX(predicted_class) AS peak_demand FROM predictions_monitoring WHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "options":  {
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ]
+                                                         },
+                                       "colorMode":  "background",
+                                       "graphMode":  "none"
+                                   },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "unit":  "short",
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "#F3F4F6",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#7DD3FC",
+                                                                                                 "value":  1
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#2563EB",
+                                                                                                 "value":  2
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#FACC15",
+                                                                                                 "value":  3
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#F97316",
+                                                                                                 "value":  4
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#B91C1C",
+                                                                                                 "value":  5
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "mappings":  [
+                                                                             {
+                                                                                 "type":  "value",
+                                                                                 "options":  {
+                                                                                                 "0":  {
+                                                                                                           "text":  "0 - Không có",
+                                                                                                           "color":  "#F3F4F6",
+                                                                                                           "index":  0
+                                                                                                       },
+                                                                                                 "1":  {
+                                                                                                           "text":  "1 - Rất thấp",
+                                                                                                           "color":  "#7DD3FC",
+                                                                                                           "index":  1
+                                                                                                       },
+                                                                                                 "2":  {
+                                                                                                           "text":  "2 - Thấp",
+                                                                                                           "color":  "#2563EB",
+                                                                                                           "index":  2
+                                                                                                       },
+                                                                                                 "3":  {
+                                                                                                           "text":  "3 - Trung bình",
+                                                                                                           "color":  "#FACC15",
+                                                                                                           "index":  3
+                                                                                                       },
+                                                                                                 "4":  {
+                                                                                                           "text":  "4 - Cao",
+                                                                                                           "color":  "#F97316",
+                                                                                                           "index":  4
+                                                                                                       },
+                                                                                                 "5":  {
+                                                                                                           "text":  "5 - Rất cao",
+                                                                                                           "color":  "#B91C1C",
+                                                                                                           "index":  5
+                                                                                                       }
+                                                                                             }
+                                                                             }
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       }
+                   },
+                   {
+                       "id":  21,
+                       "title":  "Demand Story",
+                       "type":  "row",
+                       "gridPos":  {
+                                       "x":  0,
+                                       "y":  24,
+                                       "w":  24,
+                                       "h":  1
+                                   },
+                       "collapsed":  false,
+                       "panels":  [
+
+                                  ]
+                   },
+                   {
+                       "id":  6,
+                       "title":  "Demand Distribution - Latest Window",
+                       "type":  "bargauge",
+                       "gridPos":  {
+                                       "x":  0,
+                                       "y":  25,
+                                       "w":  6,
+                                       "h":  8
+                                   },
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "PostgreSQL"
+                                      },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "PostgreSQL"
+                                                          },
+                                           "editorMode":  "code",
+                                           "format":  "table",
+                                           "rawQuery":  true,
+                                           "rawSql":  "WITH levels AS (\n    SELECT generate_series(0, 5) AS predicted_class\n), latest AS (\n    SELECT MAX(window_end) AS window_end\n    FROM predictions_monitoring\n)\nSELECT\n    CASE levels.predicted_class\n        WHEN 0 THEN \u00270 - Không có\u0027\n        WHEN 1 THEN \u00271 - Rất thấp\u0027\n        WHEN 2 THEN \u00272 - Thấp\u0027\n        WHEN 3 THEN \u00273 - Trung bình\u0027\n        WHEN 4 THEN \u00274 - Cao\u0027\n        WHEN 5 THEN \u00275 - Rất cao\u0027\n    END AS level,\n    COUNT(p.zone_id) AS zones\nFROM levels\nCROSS JOIN latest\nLEFT JOIN predictions_monitoring p\n    ON p.predicted_class = levels.predicted_class\n   AND p.window_end = latest.window_end\nGROUP BY levels.predicted_class\nORDER BY levels.predicted_class",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "options":  {
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ]
+                                                         },
+                                       "orientation":  "horizontal",
+                                       "displayMode":  "gradient",
+                                       "showUnfilled":  true
+                                   },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "#F3F4F6",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#7DD3FC",
+                                                                                                 "value":  1
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#2563EB",
+                                                                                                 "value":  2
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#FACC15",
+                                                                                                 "value":  3
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#F97316",
+                                                                                                 "value":  4
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "#B91C1C",
+                                                                                                 "value":  5
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       }
+                   },
+                   {
+                       "id":  7,
+                       "title":  "Demand Level Trend - Last 24h Event Time",
+                       "type":  "timeseries",
+                       "gridPos":  {
+                                       "x":  6,
+                                       "y":  25,
+                                       "w":  12,
+                                       "h":  8
+                                   },
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "PostgreSQL"
+                                      },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "PostgreSQL"
+                                                          },
+                                           "editorMode":  "code",
+                                           "format":  "time_series",
+                                           "rawQuery":  true,
+                                           "rawSql":  "SELECT\n    window_end AS \"time\",\n    SUM(CASE WHEN predicted_class = 0 THEN 1 ELSE 0 END) AS \"0 - Không có\",\n    SUM(CASE WHEN predicted_class = 1 THEN 1 ELSE 0 END) AS \"1 - Rất thấp\",\n    SUM(CASE WHEN predicted_class = 2 THEN 1 ELSE 0 END) AS \"2 - Thấp\",\n    SUM(CASE WHEN predicted_class = 3 THEN 1 ELSE 0 END) AS \"3 - Trung bình\",\n    SUM(CASE WHEN predicted_class = 4 THEN 1 ELSE 0 END) AS \"4 - Cao\",\n    SUM(CASE WHEN predicted_class = 5 THEN 1 ELSE 0 END) AS \"5 - Rất cao\"\nFROM predictions_monitoring\nWHERE window_end \u003e= (SELECT MAX(window_end) FROM predictions_monitoring) - INTERVAL \u002724 hours\u0027\nGROUP BY window_end\nORDER BY window_end",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "options":  {
+                                       "legend":  {
+                                                      "displayMode":  "list",
+                                                      "placement":  "bottom"
+                                                  },
+                                       "tooltip":  {
+                                                       "mode":  "multi"
+                                                   }
+                                   },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "lineWidth":  2,
+                                                                           "fillOpacity":  20,
+                                                                           "drawStyle":  "line",
+                                                                           "stacking":  {
+                                                                                            "mode":  "normal",
+                                                                                            "group":  "A"
+                                                                                        },
+                                                                           "gradientMode":  "none"
+                                                                       }
+                                                        },
+                                           "overrides":  [
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "0 - Không có"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "mode":  "fixed",
+                                                                                                      "fixedColor":  "#F4F7FB"
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "1 - Rất thấp"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "mode":  "fixed",
+                                                                                                      "fixedColor":  "#80D8FF"
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "2 - Thấp"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "mode":  "fixed",
+                                                                                                      "fixedColor":  "#2F80ED"
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "3 - Trung bình"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "mode":  "fixed",
+                                                                                                      "fixedColor":  "#F2C94C"
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "4 - Cao"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "mode":  "fixed",
+                                                                                                      "fixedColor":  "#F97316"
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "5 - Rất cao"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "mode":  "fixed",
+                                                                                                      "fixedColor":  "#B91C1C"
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             }
+                                                         ]
+                                       }
+                   },
+                   {
+                       "id":  8,
+                       "title":  "Top Demand Zones - Latest Window",
+                       "type":  "table",
+                       "gridPos":  {
+                                       "x":  18,
+                                       "y":  25,
+                                       "w":  6,
+                                       "h":  8
+                                   },
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "PostgreSQL"
+                                      },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "PostgreSQL"
+                                                          },
+                                           "editorMode":  "code",
+                                           "format":  "table",
+                                           "rawQuery":  true,
+                                           "rawSql":  "SELECT\n    zone_id AS \"Zone\",\n    predicted_class AS \"Demand\",\n    CASE predicted_class\n        WHEN 0 THEN \u0027Không có\u0027\n        WHEN 1 THEN \u0027Rất thấp\u0027\n        WHEN 2 THEN \u0027Thấp\u0027\n        WHEN 3 THEN \u0027Trung bình\u0027\n        WHEN 4 THEN \u0027Cao\u0027\n        WHEN 5 THEN \u0027Rất cao\u0027\n    END AS \"Label\",\n    ROUND(pred_confidence::numeric, 3) AS \"Conf\",\n    used_model AS \"Model\"\nFROM predictions_monitoring\nWHERE window_end = (SELECT MAX(window_end) FROM predictions_monitoring)\nORDER BY predicted_class DESC, pred_confidence DESC, zone_id\nLIMIT 15",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "options":  {
+                                       "sortBy":  [
+                                                      {
+                                                          "displayName":  "Demand",
+                                                          "desc":  true
+                                                      }
+                                                  ],
+                                       "footer":  {
+                                                      "show":  false
+                                                  }
+                                   },
+                       "fieldConfig":  {
+                                           "defaults":  {
+
+                                                        },
+                                           "overrides":  [
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "Demand"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "custom.displayMode",
+                                                                                        "value":  "color-background"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "thresholds",
+                                                                                        "value":  {
+                                                                                                      "mode":  "absolute",
+                                                                                                      "steps":  [
+                                                                                                                    {
+                                                                                                                        "color":  "#F3F4F6",
+                                                                                                                        "value":  null
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#7DD3FC",
+                                                                                                                        "value":  1
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#2563EB",
+                                                                                                                        "value":  2
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#FACC15",
+                                                                                                                        "value":  3
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#F97316",
+                                                                                                                        "value":  4
+                                                                                                                    },
+                                                                                                                    {
+                                                                                                                        "color":  "#B91C1C",
+                                                                                                                        "value":  5
+                                                                                                                    }
+                                                                                                                ]
+                                                                                                  }
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "mode":  "thresholds"
+                                                                                                  }
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "min",
+                                                                                        "value":  0
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "max",
+                                                                                        "value":  5
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "Conf"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "unit",
+                                                                                        "value":  "percentunit"
+                                                                                    }
+                                                                                ]
+                                                             }
+                                                         ]
+                                       }
+                   }
+               ]
 }

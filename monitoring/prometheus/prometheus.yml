@@ -60,6 +60,27 @@ scrape_configs:
             "spark-master:4044",
           ]
 
+  # Custom Structured Streaming metrics, exported from each PySpark driver.
+  - job_name: "spark-structured-streaming"
+    metrics_path: "/metrics"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["spark-master:9101"]
+        labels:
+          job_name: "kafka_to_bronze"
+      - targets: ["spark-master:9102"]
+        labels:
+          job_name: "request_bronze_to_silver"
+      - targets: ["spark-master:9103"]
+        labels:
+          job_name: "request_to_response_silver"
+      - targets: ["spark-master:9104"]
+        labels:
+          job_name: "complete_bronze_to_silver"
+      - targets: ["spark-master:9105"]
+        labels:
+          job_name: "silver_to_gold"
+
   # MinIO — ở Worker machine
   - job_name: "minio"
     metrics_path: "/minio/v2/metrics/cluster"
