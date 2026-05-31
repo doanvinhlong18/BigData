@@ -1,5 +1,3 @@
-# README EZ
-
 ## Bài toán
 
 Dự báo nhu cầu taxi theo từng NYC Taxi Zone bằng dữ liệu streaming.
