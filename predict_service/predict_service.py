@@ -74,6 +74,14 @@ METRIC_MODEL_VERSION = Gauge(
     "MLflow model version predict_service thấy trong registry, 0 nếu chưa có",
     ["model", "stage"],
 )
+METRIC_ZONES_SKIPPED = Gauge(
+    "predict_service_zones_skipped_last_slot",
+    "Số zones bị bỏ qua trong slot gần nhất vì thiếu model hoặc feature bắt buộc",
+)
+METRIC_PREDICTION_ROWS = Gauge(
+    "predict_service_prediction_rows_last_slot",
+    "Số prediction rows được ghi thành công vào PostgreSQL trong slot gần nhất",
+)
 
 # ── Startup validation: feature_builder phải có trước khi import ──────────────
 _FEATURE_BUILDER_PATH = "/opt/ml/feature_builder.py"
@@ -94,7 +102,8 @@ from feature_builder import (
     FeatureBuilder,
     ALL_FEATURE_COLS,
     NO_WEATHER_FEATURE_COLS,
-    inject_weather_leads,
+    LAG_WEATHER_COLS,
+    WEATHER_LEAD_STEPS,
     LAG_STEPS,
 )
 
@@ -129,6 +138,22 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_S", "15"))
 MODEL_RELOAD_INTERVAL = int(os.getenv("MODEL_RELOAD_INTERVAL_S", "300"))
 
 SLOT_MINUTES = 15
+
+RAW_WEATHER_COLS = [
+    "temperature_2m",
+    "relative_humidity_2m",
+    "surface_pressure",
+    "precipitation",
+    "rain",
+    "snowfall",
+    "cloud_cover",
+    "weather_code",
+    "wind_speed_10m",
+    "wind_gusts_10m",
+]
+MODEL_A_REQUIRED_WEATHER_COLS = RAW_WEATHER_COLS + [
+    f"{wc}_lead{step}" for wc in LAG_WEATHER_COLS for step in WEATHER_LEAD_STEPS
+]
 
 DEMAND_LABELS = {
     0: "0 - Không có",
@@ -195,6 +220,16 @@ def _s3_prefix_available(uri: str) -> bool:
         log.warning(f"[S3] Prefix unavailable at {uri}: {e}")
         return False
 
+
+def _normalize_timestamp_utc(value) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts.floor("us")
+
+
 # ── Graceful shutdown ──────────────────────────────────────────────────────────
 _running = True
 
@@ -259,8 +294,7 @@ def _get_last_predicted_slot() -> pd.Timestamp | None:
                 cur.execute("SELECT MAX(window_end) FROM predictions_monitoring")
                 row = cur.fetchone()
         if row and row[0] is not None:
-            ts = pd.Timestamp(row[0])
-            return ts.tz_localize("UTC") if ts.tzinfo is None else ts
+            return _normalize_timestamp_utc(row[0])
     except Exception as e:
         log.warning(f"[PG] get_last_predicted_slot failed: {e}")
     return None
@@ -469,17 +503,17 @@ def _load_latest_gold():
         max_col = "max.window_end"
         full_df = None
 
-        if max_col in add_actions and add_actions[max_col]:
-            raw_max = max(v for v in add_actions[max_col] if v is not None)
-            latest_we = pd.Timestamp(raw_max)
-            if latest_we.tzinfo is None:
-                latest_we = latest_we.tz_localize("UTC")
+        stat_values = [v for v in add_actions.get(max_col, []) if v is not None]
+        if stat_values:
+            latest_we = _normalize_timestamp_utc(max(stat_values))
         else:
             log.warning("[GOLD] Delta stats unavailable, column-scan fallback")
             tmp = dt.to_pandas(columns=["window_end"])
             if tmp.empty:
                 return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-            tmp["window_end"] = pd.to_datetime(tmp["window_end"])
+            tmp["window_end"] = pd.to_datetime(tmp["window_end"], utc=True).dt.floor(
+                "us"
+            )
             latest_we = tmp["window_end"].max()
 
         lag92_we = latest_we - pd.Timedelta(minutes=SLOT_MINUTES * LAG_STEPS[0])
@@ -487,24 +521,10 @@ def _load_latest_gold():
 
         def snap(we):
             nonlocal full_df
-            target = pd.Timestamp(we)
-            if target.tzinfo is None:
-                target = target.tz_localize("UTC")
-            else:
-                target = target.tz_convert("UTC")
-            target = target.floor("us")
+            target = _normalize_timestamp_utc(we)
 
-            try:
-                return dt.to_pandas(
-                    filters=[("window_end", "=", target.to_pydatetime())]
-                )
-            except Exception as filter_error:
-                log.warning(
-                    "[GOLD] timestamp pushdown failed for %s: %s; "
-                    "falling back to pandas filter",
-                    target,
-                    filter_error,
-                )
+            def pandas_filter():
+                nonlocal full_df
                 if full_df is None:
                     full_df = dt.to_pandas()
                     if full_df.empty:
@@ -514,6 +534,26 @@ def _load_latest_gold():
                     )
                 result = full_df.loc[full_df["_window_end_utc"].eq(target)].copy()
                 return result.drop(columns=["_window_end_utc"], errors="ignore")
+
+            try:
+                result = dt.to_pandas(
+                    filters=[("window_end", "=", target.to_pydatetime())]
+                )
+                if not result.empty:
+                    return result
+                log.debug(
+                    "[GOLD] timestamp pushdown returned 0 rows for %s; "
+                    "falling back to pandas filter",
+                    target,
+                )
+            except Exception as filter_error:
+                log.warning(
+                    "[GOLD] timestamp pushdown failed for %s: %s; "
+                    "falling back to pandas filter",
+                    target,
+                    filter_error,
+                )
+            return pandas_filter()
 
         return snap(latest_we), snap(lag92_we), snap(lag668_we)
 
@@ -570,7 +610,7 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
 
     if frames:
         wdf = pd.concat(frames, ignore_index=True)
-        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+        wdf["window_end"] = pd.to_datetime(wdf["window_end"], utc=True).dt.floor("us")
         return wdf
 
     # 2. Thử local parquet files: datasets/parquet_by_day/{date}.parquet
@@ -588,7 +628,7 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
 
     if local_frames:
         wdf = pd.concat(local_frames, ignore_index=True)
-        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+        wdf["window_end"] = pd.to_datetime(wdf["window_end"], utc=True).dt.floor("us")
         log.info(f"[WEATHER] Loaded {len(local_frames)} local parquet file(s) for {slot_end}")
         return wdf
 
@@ -596,7 +636,7 @@ def _load_weather(slot_end: pd.Timestamp) -> pd.DataFrame:
     if os.path.exists(WEATHER_CSV):
         log.warning("[WEATHER] Parquet not found — CSV fallback")
         wdf = pd.read_csv(WEATHER_CSV, parse_dates=["window_end"])
-        wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+        wdf["window_end"] = pd.to_datetime(wdf["window_end"], utc=True).dt.floor("us")
         return wdf[wdf["window_end"].dt.strftime("%Y-%m-%d").isin(needed)]
 
     log.warning("[WEATHER] No weather data found (S3, local parquet, or CSV) — running without weather features")
@@ -677,18 +717,26 @@ class ModelCache:
     def _load_one(self, name: str, stage: str = "Production"):
         try:
             vs = self._client.get_latest_versions(name, stages=[stage])
-            if not vs:
-                return None, None
-            version = vs[0]
-            if not _s3_artifact_available(version.source):
-                return None, version.version
+        except Exception as e:
+            log.warning(f"[MODEL] {name}/{stage} registry lookup failed: {e}")
+            return None, None
+
+        if not vs:
+            return None, None
+
+        version = vs[0]
+        version_id = version.version
+        if not _s3_artifact_available(version.source):
+            return None, version_id
+
+        try:
             return (
                 mlflow.lightgbm.load_model(f"models:/{name}/{stage}"),
-                version.version,
+                version_id,
             )
         except Exception as e:
             log.warning(f"[MODEL] {name}/{stage} load failed: {e}")
-            return None, None
+            return None, version_id
 
     def refresh_if_needed(self):
         now = time.monotonic()
@@ -706,10 +754,18 @@ class ModelCache:
             "demand_forecast_model_a", "Staging"
         )
         self._last_load = now
+
+        def model_status(model, version):
+            if model:
+                return f"OK v{version}"
+            if version:
+                return f"NOT_LOADED registry_v{version}"
+            return "NONE"
+
         log.info(
-            f"[MODEL] model_a={'OK v'+str(self._ver_a) if self._model_a else 'NONE'} "
-            f"model_b={'OK v'+str(self._ver_b) if self._model_b else 'NONE'} "
-            f"shadow_a={'OK v'+str(self._shadow_a_ver) if self._shadow_a else 'NONE'}"
+            f"[MODEL] model_a={model_status(self._model_a, self._ver_a)} "
+            f"model_b={model_status(self._model_b, self._ver_b)} "
+            f"shadow_a={model_status(self._shadow_a, self._shadow_a_ver)}"
         )
         self._publish_metrics()
 
@@ -738,6 +794,22 @@ class ModelCache:
 def _predict_slot(
     slot_end, cur_df, l92_df, l668_df, weather_df, cache: ModelCache
 ) -> int:
+    slot_end = _normalize_timestamp_utc(slot_end)
+    source_zone_count = (
+        int(cur_df["zone_id"].nunique()) if "zone_id" in cur_df.columns else len(cur_df)
+    )
+
+    if not cache.model_a and not cache.model_b:
+        log.warning(
+            "[PREDICT] slot=%s skipped: no Production model loaded | zones=%s",
+            slot_end,
+            source_zone_count,
+        )
+        METRIC_ZONES_SKIPPED.set(source_zone_count)
+        METRIC_PREDICTION_ROWS.set(0)
+        METRIC_ZONES_PREDICTED.set(0)
+        return 0
+
     # FeatureBuilder.build_inference_matrix_from_snapshots() already calls
     # inject_weather_leads() internally, so don't call it again here
     feat_df = FeatureBuilder.build_inference_matrix_from_snapshots(
@@ -748,10 +820,11 @@ def _predict_slot(
     )
 
     rows = []
+    skipped = 0
     predicted_at = pd.Timestamp.utcnow()
     for _, row in feat_df.iterrows():
         zone_id = int(row["zone_id"])
-        has_wx = all(pd.notna(row.get(f"temperature_2m_lead{i}")) for i in [1, 2, 3])
+        has_wx = all(pd.notna(row.get(c)) for c in MODEL_A_REQUIRED_WEATHER_COLS)
 
         if cache.model_a and has_wx:
             x = row[ALL_FEATURE_COLS].values.reshape(1, -1)
@@ -762,12 +835,11 @@ def _predict_slot(
             proba = cache.model_b.predict_proba(x)[0]
             pred, used, m_ver = int(np.argmax(proba)), "model_b", cache.ver_b
         else:
-            proba = np.zeros(6)
-            proba[0] = 1.0
-            pred, used, m_ver = 0, "fallback", None
+            skipped += 1
+            continue
 
         shadow_pred, shadow_proba = None, [None] * 6
-        if cache.shadow:
+        if cache.shadow and has_wx:
             try:
                 sp = cache.shadow.predict_proba(
                     row[ALL_FEATURE_COLS].values.reshape(1, -1)
@@ -798,6 +870,14 @@ def _predict_slot(
         )
 
     if not rows:
+        log.warning(
+            "[PREDICT] slot=%s skipped: no zones had a usable model/features | zones=%s",
+            slot_end,
+            skipped,
+        )
+        METRIC_ZONES_SKIPPED.set(skipped)
+        METRIC_PREDICTION_ROWS.set(0)
+        METRIC_ZONES_PREDICTED.set(0)
         return 0
 
     cols = [
@@ -838,6 +918,9 @@ def _predict_slot(
             )
         conn.commit()
 
+    METRIC_ZONES_SKIPPED.set(skipped)
+    METRIC_PREDICTION_ROWS.set(len(rows))
+    METRIC_ZONES_PREDICTED.set(len(rows))
     return len(rows)
 
 
@@ -883,10 +966,10 @@ def main():
             if cur_df.empty:
                 log.debug("[LOOP] gold empty, waiting for Spark...")
             else:
-                cur_df["window_end"] = pd.to_datetime(cur_df["window_end"])
-                slot_end = cur_df["window_end"].iloc[0]
-                if slot_end.tzinfo is None:
-                    slot_end = slot_end.tz_localize("UTC")
+                cur_df["window_end"] = pd.to_datetime(
+                    cur_df["window_end"], utc=True
+                ).dt.floor("us")
+                slot_end = _normalize_timestamp_utc(cur_df["window_end"].iloc[0])
 
                 if last_slot is not None and slot_end <= last_slot:
                     # Gold chưa có slot mới, Spark chưa trigger xong
@@ -899,7 +982,8 @@ def main():
                     )
                     log.info(
                         f"[PREDICT] slot={slot_end} | zones={n} "
-                        f"| model={'a' if cache.model_a else 'b/fallback'}"
+                        f"| loaded_models="
+                        f"{','.join(m for m, ok in [('model_a', cache.model_a), ('model_b', cache.model_b)] if ok) or 'none'}"
                     )
                     # FIX: cập nhật Prometheus metrics sau mỗi lần predict thành công
                     # Alert "PredictServiceStale" đọc metric này để biết service còn sống.

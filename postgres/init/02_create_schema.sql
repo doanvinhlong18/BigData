@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS predictions_monitoring (
     pred_confidence         REAL         NOT NULL,
     used_model              VARCHAR(20)  NOT NULL,
     model_version           VARCHAR(20),
-    -- predicted_at = window_end (event_time), xem lý do trên
+    -- predicted_at = wall-clock time lúc predict_service ghi prediction
     predicted_at            TIMESTAMPTZ  NOT NULL,
     shadow_predicted_class  SMALLINT,
     proba_0  REAL, proba_1  REAL, proba_2  REAL,

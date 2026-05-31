@@ -47,7 +47,7 @@ Cơ chế tự cập nhật:
 - Endpoint GeoJSON vẫn có `Cache-Control: no-store`, nhưng geometry chủ yếu dùng làm nền không gian; màu prediction lấy từ query nên không cần reload toàn bộ trang.
 - Query map có thêm một `Seed row` với `zone_id = -1` để tránh lỗi index `0` của plugin `Dynamic GeoJSON` không được style. Row này không khớp với feature nào nên không hiển thị trên bản đồ.
 
-Lưu ý runtime lúc kiểm tra ngày 31/05/2026: bảng `predictions_monitoring` trong database `bigdata` đang có `0` dòng, nên map chỉ có nền đen và zone màu mặc định cho tới khi pipeline ghi lại prediction mới. Đây là vấn đề runtime, không phải lỗi style của map. Log mới nhất của `predict-service` cho thấy service không kết nối được tới Worker/MinIO `26.250.104.24:9000`, nên không đọc được `s3://gold/aggregated/_delta_log/`.
+Lưu ý runtime lúc kiểm tra ngày 31/05/2026: bảng `predictions_monitoring` trong database `bigdata` đang có `0` dòng, nên map chỉ có nền đen và zone màu mặc định cho tới khi pipeline ghi lại prediction mới. Đây là vấn đề runtime, không phải lỗi style của map. Log mới nhất của `predict-service` cho thấy service không kết nối được tới Worker/MinIO `26.250.104.24:9000`, nên không đọc được `s3://gold/aggregated/_delta_log/`. Predict service hiện không ghi fallback giả khi chưa có model hợp lệ; vì vậy `Missing Zones` có thể tăng nếu thiếu model hoặc thiếu feature bắt buộc.
 
 Các panel được giữ:
 
@@ -140,9 +140,28 @@ Các metric hỗ trợ thêm:
 
 - `predict_service_model_ready`: `1` nếu có ít nhất một Production model để inference.
 - `predict_service_models_loaded_total`: số Production model đang load.
-- `predict_service_model_version{model, stage}`: version MLflow đang load, `0` nếu chưa load.
+- `predict_service_model_version{model, stage}`: version MLflow registry mà predict service nhìn thấy, `0` nếu chưa có version.
+- `predict_service_zones_skipped_last_slot`: số zone bị bỏ qua trong slot gần nhất do thiếu model hoặc feature bắt buộc.
+- `predict_service_prediction_rows_last_slot`: số prediction rows ghi thành công vào Postgres trong slot gần nhất.
 
 Lưu ý runtime lúc kiểm tra ngày 31/05/2026: metric `predict_service_model_version` đang thấy `model_a=1` và `model_b=1` trong MLflow registry, nhưng `predict_service_model_loaded` vẫn là `0/2` vì service chưa tải được artifact model từ MinIO. Log hiện tại là connect timeout tới `http://26.250.104.24:9000/mlflow-artifacts/.../MLmodel`. Nói cách khác, "đã register/promote model" khác với "predict-service đã download và load model vào RAM". Khi Worker/MinIO reachable và artifact tồn tại, panel sẽ tự chuyển sang `1/2` hoặc `2/2` sau lần reload model tiếp theo.
+
+## Soát Logic Predict Cuối
+
+Các lỗi runtime đã sửa:
+
+- Feature matrix inference trước đó có thể bị trùng cột `zone_id` vì output dùng `["zone_id", "window_end"] + ALL_FEATURE_COLS`, trong khi `ALL_FEATURE_COLS` đã có `zone_id`. Khi lặp từng row, `row["zone_id"]` trở thành `Series` và `_predict_slot()` có thể fail ở `int(row["zone_id"])`. Output inference hiện dùng helper loại `zone_id` trùng.
+- `window_end` của gold có thể là `datetime64[ns, UTC]`, còn weather local/CSV thường là timezone-naive. Khi merge theo `(zone_id, window_end)`, pandas có thể fail hoặc không match. Feature builder và predict service hiện normalize toàn bộ `window_end` về UTC và floor microsecond trước khi merge/filter.
+- Nếu Delta filter theo timestamp trả empty, predict service hiện fallback sang pandas filter toàn bảng gold. Trường hợp Delta stats không có `max.window_end` cũng fallback sang scan cột `window_end`.
+
+Quy tắc ghi prediction mới:
+
+- Không có `model_a` và không có `model_b`: không ghi Postgres, `prediction_rows_last_slot=0`, `zones_skipped_last_slot` bằng số zone nguồn.
+- Có đủ raw weather và weather lead, đồng thời `model_a` load được: dùng `model_a`.
+- Thiếu weather nhưng `model_b` load được: dùng `model_b`.
+- Không có model phù hợp cho zone: bỏ qua zone đó, không ghi fallback `predicted_class=0`.
+
+Ý nghĩa nghiệp vụ: `predicted_class=0` giờ chỉ xuất hiện khi model thật dự đoán "không có demand". Zone thiếu model/feature sẽ hiện qua `Missing Zones` và `predict_service_zones_skipped_last_slot`, đúng hơn cho giám sát chất lượng pipeline.
 
 ## Custom Metrics Mới
 

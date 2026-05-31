@@ -687,6 +687,21 @@ US_HOLIDAYS = holidays.US(years=list(range(2024, 2027)))
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
 
+def _normalize_datetime_utc(values):
+    converted = pd.to_datetime(values, utc=True)
+    if isinstance(converted, pd.Series):
+        return converted.dt.floor("us")
+    if isinstance(converted, pd.DatetimeIndex):
+        return converted.floor("us")
+    return pd.Timestamp(converted).floor("us")
+
+
+def _inference_output_cols() -> list[str]:
+    return ["zone_id", "window_end"] + [
+        c for c in ALL_FEATURE_COLS if c != "zone_id"
+    ]
+
+
 def compute_imbalance(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     area = df["zone_id"].map(ZONE_AREAS_KM2).fillna(1.0)
@@ -756,7 +771,7 @@ def _add_neighbor_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _add_temporal(df: pd.DataFrame) -> pd.DataFrame:
-    we = pd.to_datetime(df["window_end"])
+    we = _normalize_datetime_utc(df["window_end"])
 
     slot_15m = we.dt.minute // 15
     df["slot_15m_sin"] = np.sin(2 * np.pi * slot_15m / 4)
@@ -780,7 +795,7 @@ def _add_temporal(df: pd.DataFrame) -> pd.DataFrame:
     df["is_weekend"] = (dow >= 5).astype(int)
 
     holiday_dates = pd.to_datetime(list(US_HOLIDAYS.keys()))
-    holiday_window = (
+    holiday_window_dates = set(
         pd.DatetimeIndex(
             np.concatenate(
                 [
@@ -792,8 +807,9 @@ def _add_temporal(df: pd.DataFrame) -> pd.DataFrame:
         )
         .normalize()
         .unique()
+        .date
     )
-    df["is_holiday"] = we.dt.normalize().isin(holiday_window).astype(int)
+    df["is_holiday"] = we.dt.date.isin(holiday_window_dates).astype(int)
     return df
 
 
@@ -861,8 +877,8 @@ def inject_weather_raw(
 
     df = df.copy()
     wdf = weather_df.copy()
-    wdf["window_end"] = pd.to_datetime(wdf["window_end"])
-    df[window_col] = pd.to_datetime(df[window_col])
+    wdf["window_end"] = _normalize_datetime_utc(wdf["window_end"])
+    df[window_col] = _normalize_datetime_utc(df[window_col])
 
     # Chỉ lấy các cột thực sự có trong weather_df
     available = [c for c in RAW_WEATHER_COLS if c in wdf.columns]
@@ -908,9 +924,10 @@ def inject_weather_leads(
     """
     df = df.copy()
     wdf = weather_df.copy()
-    wdf["window_end"] = pd.to_datetime(wdf["window_end"])
+    wdf["window_end"] = _normalize_datetime_utc(wdf["window_end"])
+    df[window_col] = _normalize_datetime_utc(df[window_col])
     for step in WEATHER_LEAD_STEPS:
-        lead_we = pd.to_datetime(df[window_col]) + pd.Timedelta(minutes=15 * step)
+        lead_we = df[window_col] + pd.Timedelta(minutes=15 * step)
         tmp = df[[zone_id_col]].copy()
         tmp["_lead_we"] = lead_we
         tmp = tmp.merge(
@@ -934,7 +951,7 @@ class FeatureBuilder:
         quantile_thresholds: list[float] | None = None,
     ) -> pd.DataFrame:
         df = gold_df.copy()
-        df["window_end"] = pd.to_datetime(df["window_end"])
+        df["window_end"] = _normalize_datetime_utc(df["window_end"])
         df = compute_imbalance(df)
         df = _add_neighbor_features(df)
         df = _add_temporal(df)
@@ -976,7 +993,7 @@ class FeatureBuilder:
         weather_df: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         df = current_df.copy()
-        df["window_end"] = pd.to_datetime(df["window_end"])
+        df["window_end"] = _normalize_datetime_utc(df["window_end"])
         df = compute_imbalance(df)
         df = _add_neighbor_features(df)
         df = _add_temporal(df)
@@ -985,6 +1002,7 @@ class FeatureBuilder:
         for step, snap in [(92, lag92_df), (668, lag668_df)]:
             s = snap.copy() if not snap.empty else pd.DataFrame(columns=["zone_id"])
             if not s.empty:
+                s["window_end"] = _normalize_datetime_utc(s["window_end"])
                 s = compute_imbalance(s)
                 s = _add_neighbor_features(s)  # lag cần neighbor cols của snapshot cũ
             lag_snaps[step] = s
@@ -1006,7 +1024,7 @@ class FeatureBuilder:
             if c not in df.columns:
                 df[c] = np.nan
 
-        return df[["zone_id", "window_end"] + ALL_FEATURE_COLS].copy()
+        return df[_inference_output_cols()].copy()
 
     @classmethod
     def build_inference_matrix(
@@ -1016,7 +1034,7 @@ class FeatureBuilder:
     ) -> pd.DataFrame:
         """Giữ lại để tránh break code cũ."""
         df = history_df.copy()
-        df["window_end"] = pd.to_datetime(df["window_end"])
+        df["window_end"] = _normalize_datetime_utc(df["window_end"])
         df = compute_imbalance(df)
         df = _add_neighbor_features(df)
         df = _add_temporal(df)
@@ -1033,6 +1051,4 @@ class FeatureBuilder:
             if c not in df.columns:
                 df[c] = np.nan
         latest = df.groupby("zone_id")["window_end"].transform("max")
-        return df[df["window_end"] == latest][
-            ["zone_id", "window_end"] + ALL_FEATURE_COLS
-        ].copy()
+        return df[df["window_end"] == latest][_inference_output_cols()].copy()
